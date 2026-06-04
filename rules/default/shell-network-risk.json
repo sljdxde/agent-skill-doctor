@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "shell-execution-risk",
+      "title": "Possible shell execution",
+      "severity": "medium",
+      "category": "shell",
+      "patterns": [
+        { "id": "subprocess", "text": "subprocess" },
+        { "id": "child-process", "text": "child_process" },
+        { "id": "os-system", "text": "os.system" },
+        { "id": "powershell", "text": "powershell" }
+      ],
+      "recommendation": "Review shell execution instructions and require user confirmation before running commands."
+    },
+    {
+      "id": "network-download-risk",
+      "title": "Possible remote download or installer execution",
+      "severity": "high",
+      "category": "network",
+      "patterns": [
+        { "id": "curl-command", "text": "curl" },
+        { "id": "wget-command", "text": "wget" },
+        { "id": "remote-script", "text": "remote script" },
+        { "id": "download-execute", "text": "download and execute" }
+      ],
+      "recommendation": "Verify source URLs and avoid automatic execution of remotely downloaded content."
+    }
+  ]
+}
