@@ -1,0 +1,10 @@
+node_modules/
+.DS_Store
+.env
+.agent-skill-doctor/
+doctor.db
+reports/
+*.log
+coverage/
+dist/
+build/
