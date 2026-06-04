@@ -1,0 +1,20 @@
+{
+  "name": "agent-skill-doctor",
+  "version": "0.1.0",
+  "description": "Diagnostic and governance CLI for AI agent skills",
+  "type": "commonjs",
+  "bin": {
+    "agent-skill-doctor": "./bin/agent-skill-doctor.js",
+    "skill-doctor": "./bin/agent-skill-doctor.js"
+  },
+  "scripts": {
+    "start": "node ./bin/agent-skill-doctor.js",
+    "scan": "node ./bin/agent-skill-doctor.js scan --json",
+    "report": "node ./bin/agent-skill-doctor.js report --format md",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "license": "MIT"
+}
