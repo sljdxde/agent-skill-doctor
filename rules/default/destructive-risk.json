@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "destructive-action-risk",
+      "title": "Possible destructive filesystem operation",
+      "severity": "critical",
+      "category": "destructive_action",
+      "patterns": [
+        { "id": "recursive-remove", "text": "rm -rf" },
+        { "id": "recursive-delete", "text": "delete recursively" },
+        { "id": "overwrite-file", "text": "overwrite" }
+      ],
+      "recommendation": "Require manual review and an explicit confirmation step before destructive file operations are allowed."
+    }
+  ]
+}
