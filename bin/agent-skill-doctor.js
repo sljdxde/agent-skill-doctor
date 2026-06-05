@@ -6,6 +6,10 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
+const { loadJsonRules, scanSkillForRisks } = require('../src/doctor/risk-lite');
+const { detectConflicts } = require('../src/doctor/conflict');
+const { detectZombies } = require('../src/doctor/zombie');
+const { DEFAULT_CONFLICT_RULES } = require('../src/doctor/rules');
 
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'target', 'dist', 'build', '.cache', '.DS_Store']);
 
@@ -192,6 +196,14 @@ CREATE TABLE IF NOT EXISTS doctor_runs (
   config_json TEXT NOT NULL,
   summary_json TEXT
 );
+
+CREATE TABLE IF NOT EXISTS reports (
+  id TEXT PRIMARY KEY,
+  format TEXT NOT NULL,
+  path TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  summary_json TEXT NOT NULL
+);
 `);
   return db;
 }
@@ -300,6 +312,19 @@ function inferAgent(p) {
   return null;
 }
 
+function parseTags(frontmatter) {
+  const raw = frontmatter.tags || frontmatter.tag || '';
+  if (Array.isArray(raw)) return raw.map(String).map(s => s.trim().toLowerCase()).filter(Boolean);
+  return String(raw).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+}
+
+function parseManuallyPinned(frontmatter) {
+  const v = frontmatter.pinned || frontmatter.pin || frontmatter.keep;
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'string') return v === 'true' || v === '';
+  return false;
+}
+
 function inferNameDescription(dir, text, frontmatter) {
   const lines = text.split(/\r?\n/);
   const heading = lines.find(l => /^#\s+/.test(l));
@@ -336,9 +361,9 @@ function parseSkillCandidate(candidate) {
     source: { type: fm.data.source ? 'git' : 'unknown', url: fm.data.source || fm.data.source_url || null, subdir: fm.data.subdir || null, ref: fm.data.ref || fm.data.version || null, commit: fm.data.commit || null },
     location: { path: candidate.path, root: candidate.root, rootType: rootTypeFor(candidate.path), agent: inferAgent(candidate.path), isSymlink: false, symlinkTarget: null },
     version: fm.data.version || null, sourceRef: fm.data.ref || null, sourceCommit: fm.data.commit || null, sourceTreeSha: fm.data.tree_sha || null,
-    frontmatter: fm.data, tags: [], presets: [], agentTargets: [], files: hashResult.files,
+    frontmatter: fm.data, tags: parseTags(fm.data), presets: [], agentTargets: [], files: hashResult.files,
     hashes: { contentSha256: hashResult.contentSha256, normalizedTextSha256: hashResult.normalizedTextSha256, semanticFingerprint: {} },
-    capabilities: [], usage: { installedInAgents: [], installedInProjects: [], presetCount: 0, hasRecentModification: true, manuallyPinned: false, confidence: 0 },
+    capabilities: [], usage: { installedInAgents: [], installedInProjects: [], presetCount: 0, hasRecentModification: true, manuallyPinned: parseManuallyPinned(fm.data), confidence: 0 },
     createdAt: stat.birthtime?.toISOString?.() || null, modifiedAt: stat.mtime?.toISOString?.() || null, lastSeenAt: now, lastUsedAt: null, status: 'active',
     _scan: { mainFile, text, frontmatterError: fm.error, hasSkillMd: candidate.hasSkillMd, hasReadme: candidate.hasReadme }
   };
@@ -365,12 +390,38 @@ function makeFinding(skill, { type, severity, detectorId, ruleId, title, descrip
   return { finding: { id, type, severity, detectorId, ruleId, title, description, signature, evidence, recommendation, ignored: false, createdAt: at, updatedAt: at }, link: { findingId: id, skillId: skill.id, role: 'primary', addedAt: at } };
 }
 
+function descriptionQualityScore(skill) {
+  const desc = String(skill.description || '').trim();
+  if (!desc) return { score: 0, issues: ['missing-description'] };
+  const issues = [];
+  let score = 60; // has description
+  if (desc.length < 20) { score -= 20; issues.push('short-description'); }
+  const lower = desc.toLowerCase();
+  // Check for trigger/usage condition
+  if (!/\b(when|use |trigger|if |run |invoke|install|enable)\b/.test(lower)) { score -= 15; issues.push('no-trigger-condition'); }
+  // Check for I/O description
+  if (!/\b(input|output|return|result|respond|answer|generate|create|produce)\b/.test(lower)) { score -= 10; issues.push('no-io-description'); }
+  // Check for high-risk content in skill without risk description
+  const hasRisk = /\b(rm |delete|remove|exec|shell|subprocess|curl|wget|sudo|env|token|key|secret|password|credential)\b/.test(lower);
+  const hasRiskDesc = /\b(risk|danger|careful|caution|warning|safe|security|destructive|irreversible)\b/.test(lower);
+  if (hasRisk && !hasRiskDesc) { score -= 20; issues.push('risk-not-described'); }
+  return { score: Math.max(0, score), issues };
+}
+
 function detectPhase1Findings(skill) {
   const out = [];
   if (!skill._scan.hasSkillMd) out.push(makeFinding(skill, { type: 'scan_warning', severity: 'low', detectorId: 'scan-warning-detector', title: 'SKILL.md is missing', description: 'This skill candidate was detected from README.md or directory context, but no SKILL.md file was found.', issueType: 'missing-skill-md', evidenceText: skill.location.path, recommendation: 'Add SKILL.md to make the skill explicit and portable.' }));
   if (skill._scan.frontmatterError) out.push(makeFinding(skill, { type: 'scan_warning', severity: 'medium', detectorId: 'scan-warning-detector', title: 'Frontmatter parse warning', description: `The main skill file has malformed frontmatter: ${skill._scan.frontmatterError}.`, issueType: 'frontmatter-warning', evidenceText: skill._scan.frontmatterError, recommendation: 'Fix YAML frontmatter delimiters and key/value format.' }));
-  if (!skill.description || !String(skill.description).trim()) out.push(makeFinding(skill, { type: 'description_quality', severity: 'medium', detectorId: 'description-quality-detector', title: 'Description is missing', description: 'The skill has no usable description, which makes selection and governance harder.', issueType: 'missing-description', evidenceText: skill.name, recommendation: 'Add a clear description explaining when to use this skill.' }));
-  else if (String(skill.description).trim().length < 20) out.push(makeFinding(skill, { type: 'description_quality', severity: 'low', detectorId: 'description-quality-detector', title: 'Description is too short', description: 'The skill description is very short and may not explain trigger conditions or behavior.', issueType: 'short-description', evidenceText: skill.description, recommendation: 'Expand the description with use cases, inputs, outputs, and limitations.' }));
+
+  const dq = descriptionQualityScore(skill);
+  if (dq.issues.includes('missing-description')) {
+    out.push(makeFinding(skill, { type: 'description_quality', severity: 'medium', detectorId: 'description-quality-detector', title: 'Description is missing', description: 'The skill has no usable description, which makes selection and governance harder.', issueType: 'missing-description', evidenceText: skill.name, recommendation: 'Add a clear description explaining when to use this skill.' }));
+  } else {
+    if (dq.issues.includes('short-description')) out.push(makeFinding(skill, { type: 'description_quality', severity: 'low', detectorId: 'description-quality-detector', title: 'Description is too short', description: 'The skill description is very short and may not explain trigger conditions or behavior.', issueType: 'short-description', evidenceText: skill.description, recommendation: 'Expand the description with use cases, inputs, outputs, and limitations.' }));
+    if (dq.issues.includes('no-trigger-condition')) out.push(makeFinding(skill, { type: 'description_quality', severity: 'info', detectorId: 'description-quality-detector', title: 'No trigger condition in description', description: 'The description does not explain when or how to invoke this skill.', issueType: 'no-trigger-condition', evidenceText: skill.description, recommendation: 'Add trigger conditions (e.g., "when reviewing code", "use this for X").' }));
+    if (dq.issues.includes('no-io-description')) out.push(makeFinding(skill, { type: 'description_quality', severity: 'info', detectorId: 'description-quality-detector', title: 'No input/output description', description: 'The description does not explain what the skill produces or returns.', issueType: 'no-io-description', evidenceText: skill.description, recommendation: 'Describe expected inputs, outputs, or side effects.' }));
+    if (dq.issues.includes('risk-not-described')) out.push(makeFinding(skill, { type: 'description_quality', severity: 'medium', detectorId: 'description-quality-detector', title: 'High-risk actions without risk description', description: 'The skill appears to contain risky operations (shell, file deletion, credentials) but the description does not mention risks.', issueType: 'risk-not-described', evidenceText: skill.description, recommendation: 'Add risk warnings and safety considerations to the description.' }));
+  }
   return { findings: out.map(x => x.finding), links: out.map(x => x.link) };
 }
 
@@ -379,11 +430,14 @@ function upsertSkill(db, skill) {
 }
 
 function upsertFinding(db, finding, links) {
+  const at = nowIso();
+  const createdAt = finding.createdAt || at;
+  const updatedAt = finding.updatedAt || at;
   const existing = db.prepare('SELECT id FROM findings WHERE id = ?').get(finding.id);
-  if (existing) db.prepare('UPDATE findings SET type=?, severity=?, detector_id=?, rule_id=?, title=?, description=?, signature=?, evidence_json=?, recommendation=?, updated_at=? WHERE id=?').run(finding.type, finding.severity, finding.detectorId, finding.ruleId || null, finding.title, finding.description, finding.signature, JSON.stringify(finding.evidence || []), finding.recommendation || null, finding.updatedAt, finding.id);
-  else db.prepare('INSERT INTO findings (id, type, severity, detector_id, rule_id, title, description, signature, evidence_json, recommendation, ignored, ignored_reason, ignored_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?)').run(finding.id, finding.type, finding.severity, finding.detectorId, finding.ruleId || null, finding.title, finding.description, finding.signature, JSON.stringify(finding.evidence || []), finding.recommendation || null, finding.createdAt, finding.updatedAt);
+  if (existing) db.prepare('UPDATE findings SET type=?, severity=?, detector_id=?, rule_id=?, title=?, description=?, signature=?, evidence_json=?, recommendation=?, updated_at=? WHERE id=?').run(finding.type, finding.severity, finding.detectorId, finding.ruleId || null, finding.title, finding.description, finding.signature, JSON.stringify(finding.evidence || []), finding.recommendation || null, updatedAt, finding.id);
+  else db.prepare('INSERT INTO findings (id, type, severity, detector_id, rule_id, title, description, signature, evidence_json, recommendation, ignored, ignored_reason, ignored_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?)').run(finding.id, finding.type, finding.severity, finding.detectorId, finding.ruleId || null, finding.title, finding.description, finding.signature, JSON.stringify(finding.evidence || []), finding.recommendation || null, createdAt, updatedAt);
   const stmt = db.prepare('INSERT OR IGNORE INTO finding_skills (finding_id, skill_id, role, added_at) VALUES (?, ?, ?, ?)');
-  for (const link of links) stmt.run(link.findingId, link.skillId, link.role || 'primary', link.addedAt);
+  for (const link of links) stmt.run(link.findingId || finding.id, link.skillId, link.role || 'primary', link.addedAt || at);
 }
 
 function recordRun(db, run) {
@@ -409,14 +463,14 @@ function renderMarkdown(data) {
   const lines = ['# Agent Skill Doctor Report', '', '## Summary', '', `- Total skills: ${data.summary.totalSkills}`, `- Total findings: ${data.summary.totalFindings}`, `- By severity: ${JSON.stringify(data.summary.bySeverity)}`, `- By type: ${JSON.stringify(data.summary.byType)}`, '', '## Findings', ''];
   if (!data.findings.length) lines.push('No findings.', '');
   for (const f of data.findings) {
-    lines.push(`### ${f.severity.toUpperCase()} · ${f.title}`, '', `- ID: \`${f.id}\``, `- Type: \`${f.type}\``, `- Detector: \`${f.detectorId}\``);
+    lines.push(`### ${f.severity.toUpperCase()} - ${f.title}`, '', `- ID: \`${f.id}\``, `- Type: \`${f.type}\``, `- Detector: \`${f.detectorId}\``);
     if (f.ignored) lines.push(`- Ignored: yes (${f.ignoredReason || 'no reason'})`);
     if (f.skills?.length) lines.push(`- Skills: ${f.skills.map(s => `\`${s.slug}\``).join(', ')}`);
     lines.push('', f.description, '');
     if (f.recommendation) lines.push(`Recommendation: ${f.recommendation}`, '');
   }
   lines.push('## Skills', '');
-  for (const s of data.skills) lines.push(`- \`${s.slug}\` — ${s.name} — ${s.local_path}`);
+  for (const s of data.skills) lines.push(`- \`${s.slug}\` - ${s.name} - ${s.local_path}`);
   lines.push('');
   return lines.join('\n');
 }
@@ -428,14 +482,44 @@ function writeReport(db, { format, output, includeIgnored, reportsDir }) {
   const outPath = output || path.join(reportsDir, `skill-doctor-report-${Date.now()}.${ext}`);
   ensureDir(path.dirname(outPath));
   fs.writeFileSync(outPath, content, 'utf8');
+  const reportId = sha256(`${outPath}:${nowIso()}`);
+  db.prepare('INSERT OR IGNORE INTO reports (id, format, path, created_at, summary_json) VALUES (?, ?, ?, ?, ?)')
+    .run(reportId, format, outPath, nowIso(), JSON.stringify(data.summary));
   return { path: outPath, data };
 }
 
 function usage() {
-  console.log(`agent-skill-doctor Phase 1 CLI\n\nCommands:\n  scan [--full] [--root <path>] [--json]\n  diagnose [--json]\n  report [--format md|json] [--output <path>] [--include-ignored]\n  ignore <finding-id> [--reason <text>]\n  unignore <finding-id>\n  ignored list\n  help\n`);
+  console.log(`agent-skill-doctor CLI
+
+Commands:
+  scan [--full] [--root <path>] [--json]
+  diagnose [--json] [--ci] [--fail-on high|critical|medium] [--rules <dir>] [--include-ignored]
+  report [--format md|json] [--output <path>] [--include-ignored]
+  ignore <finding-id> [--reason <text>]
+  unignore <finding-id>
+  ignored list
+  help
+`);
 }
 
 function open() { const config = loadConfig(); return { config, db: openDb(config.dbPath) }; }
+
+function severityRank(severity) {
+  return { info: 0, low: 1, medium: 2, high: 3, critical: 4 }[severity] || 0;
+}
+
+function exitCodeForFindings(findings, failOn, includeIgnored) {
+  const threshold = severityRank(failOn || 'high');
+  let maxSeverity = 0;
+  for (const f of findings) {
+    if (f.ignored && !includeIgnored) continue;
+    const rank = severityRank(f.severity);
+    if (rank >= threshold) maxSeverity = Math.max(maxSeverity, rank);
+  }
+  if (maxSeverity >= 4) return 2; // critical
+  if (maxSeverity >= threshold) return 1; // at or above threshold
+  return 0;
+}
 
 function runScan(args) {
   const { config, db } = open();
@@ -459,12 +543,73 @@ function runScan(args) {
   else console.log(`Scanned ${skills.length} skills. Phase 1 findings: ${findingCount}. DB: ${config.dbPath}`);
 }
 
+function rowToSkill(row) {
+  const raw = row.raw_json ? JSON.parse(row.raw_json) : {};
+  return {
+    ...raw,
+    id: row.id,
+    upstreamSkillId: row.upstream_skill_id,
+    name: row.name,
+    slug: row.slug,
+    description: row.description,
+    source: raw.source || { type: row.source_type, url: row.source_url, ref: row.source_ref, commit: row.source_commit },
+    location: raw.location || { path: row.local_path, root: path.dirname(row.local_path), rootType: row.root_type, agent: row.agent },
+    hashes: raw.hashes || { contentSha256: row.content_hash, normalizedTextSha256: row.normalized_hash },
+    files: raw.files || [],
+    tags: raw.tags || [],
+    usage: raw.usage || { installedInAgents: [], installedInProjects: [], presetCount: 0, hasRecentModification: false, manuallyPinned: false },
+    frontmatter: raw.frontmatter || {},
+    _scan: raw._scan || {},
+  };
+}
+
 function runDiagnose(args) {
   runScan({ ...args, json: false });
-  const { db } = open();
+  const { config, db } = open();
+  const skills = db.prepare('SELECT * FROM skill_records ORDER BY slug ASC').all().map(rowToSkill);
+  const allFindings = [];
+
+  // Risk scan
+  const rulesDir = args.rules ? path.resolve(expandHome(args.rules)) : path.join(process.cwd(), 'rules/default');
+  let riskFindings = [];
+  if (fs.existsSync(rulesDir)) {
+    const rules = loadJsonRules(rulesDir);
+    for (const skill of skills) {
+      const found = scanSkillForRisks(skill, rules);
+      for (const f of found) upsertFinding(db, f, [{ findingId: f.id, skillId: skill.id, role: 'primary' }]);
+      riskFindings.push(...found);
+    }
+  }
+
+  // Conflict detection
+  const conflictFindings = detectConflicts(skills, DEFAULT_CONFLICT_RULES);
+  for (const f of conflictFindings) upsertFinding(db, f, f.links || []);
+
+  // Zombie detection
+  const zombieFindings = detectZombies(skills);
+  for (const f of zombieFindings) upsertFinding(db, f, f.links || []);
+
   const data = buildReportData(db, !!args['include-ignored']);
-  if (args.json) console.log(JSON.stringify(data, null, 2));
-  else console.log(`Skills: ${data.summary.totalSkills}\nFindings: ${data.summary.totalFindings}`);
+  const summary = {
+    ...data.summary,
+    riskFindings: riskFindings.length,
+    conflictFindings: conflictFindings.length,
+    zombieCandidates: zombieFindings.length,
+  };
+
+  if (args.json) console.log(JSON.stringify({ ...data, summary }, null, 2));
+  else {
+    console.log(`Skills: ${summary.totalSkills}`);
+    console.log(`Findings: ${summary.totalFindings}`);
+    console.log(`Risk findings: ${summary.riskFindings}`);
+    console.log(`Conflict findings: ${summary.conflictFindings}`);
+    console.log(`Zombie candidates: ${summary.zombieCandidates}`);
+  }
+
+  if (args.ci) {
+    const rows = listFindings(db, !!args['include-ignored']);
+    process.exit(exitCodeForFindings(rows, args['fail-on'] || 'high', !!args['include-ignored']));
+  }
 }
 
 function runReport(args) {

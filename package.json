@@ -10,7 +10,11 @@
   "scripts": {
     "start": "node ./bin/agent-skill-doctor.js",
     "scan": "node ./bin/agent-skill-doctor.js scan --json",
+    "diagnose": "node ./bin/agent-skill-doctor.js diagnose",
     "report": "node ./bin/agent-skill-doctor.js report --format md",
+    "phase2": "node ./bin/agent-skill-doctor-phase2.js analyze",
+    "phase3": "node ./bin/agent-skill-doctor-phase3.js conflicts",
+    "risk": "node ./bin/agent-skill-doctor-risk.js scan",
     "test": "node --test"
   },
   "engines": {
