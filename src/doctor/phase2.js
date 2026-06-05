@@ -65,18 +65,68 @@ function modifiedTime(skill) {
   return Date.parse(skill.modifiedAt || skill.modified_at || skill.updatedAt || 0) || 0;
 }
 
-function locationRank(skill) {
+function sourceTrustScore(skill) {
+  const type = skill.source?.type || skill.source_type;
+  const url = normalizeSourceUrl(skill.source?.url || skill.source_url);
+  if (type === 'marketplace') return 1.0;
+  if (/^github\.com\/(anthropics|openai|github|google-gemini)\//.test(url)) return 0.9;
+  if (/^github\.com\/[^/]+\//.test(url)) return 0.6;
   const rootType = skill.location?.rootType || skill.root_type;
-  if (rootType === 'central_library') return 3;
-  if (rootType === 'project_local') return 2;
-  if (rootType === 'agent_global') return 1;
-  return 0;
+  if (rootType === 'project_local') return 0.5;
+  if (rootType === 'agent_global') return 0.4;
+  return 0.2;
+}
+
+function locationScore(skill) {
+  const rootType = skill.location?.rootType || skill.root_type;
+  if (rootType === 'central_library') return 1;
+  if (rootType === 'project_local') return 0.7;
+  if (rootType === 'agent_global') return 0.5;
+  return 0.2;
+}
+
+function recencyScore(skill) {
+  const time = modifiedTime(skill);
+  if (!time) return 0;
+  const ageDays = Math.max(0, (Date.now() - time) / 86_400_000);
+  return Math.max(0, 1 - ageDays / 365);
+}
+
+function usageScore(skill) {
+  const usage = skill.usage || {};
+  const agentCount = usage.installedInAgents?.length || 0;
+  const projectCount = usage.installedInProjects?.length || 0;
+  return Math.min(1, (usage.presetCount || 0) * 0.25 + agentCount * 0.25 + projectCount * 0.25);
+}
+
+function descriptionScore(skill) {
+  const desc = String(skill.description || '').trim();
+  if (!desc) return 0;
+  return Math.min(1, desc.length / 120);
+}
+
+function pinnedScore(skill) {
+  const usage = skill.usage || {};
+  const tags = skill.tags || [];
+  return usage.manuallyPinned || tags.includes('keep') || tags.includes('core') ? 1 : 0;
+}
+
+function canonicalScore(skill) {
+  if (pinnedScore(skill) === 1) return Number.MAX_SAFE_INTEGER;
+  return (
+    sourceTrustScore(skill) * 0.25 +
+    recencyScore(skill) * 0.20 +
+    usageScore(skill) * 0.20 +
+    descriptionScore(skill) * 0.15 +
+    locationScore(skill) * 0.10 +
+    pinnedScore(skill) * 0.10
+  );
 }
 
 function chooseCanonical(skills) {
   return [...skills].sort((a, b) => {
-    const scoreA = locationRank(a) * 1_000_000_000_000 + modifiedTime(a);
-    const scoreB = locationRank(b) * 1_000_000_000_000 + modifiedTime(b);
+    const scoreA = canonicalScore(a);
+    const scoreB = canonicalScore(b);
     return scoreB - scoreA || String(a.slug || a.name).localeCompare(String(b.slug || b.name));
   })[0];
 }
@@ -129,7 +179,16 @@ function detectDuplicateGroups(skills) {
 
   add('exact_duplicate', 1.0, groupBy(skills, contentHash), 'identical content hash');
   add('same_source_duplicate', 0.95, groupBy(skills, sourceKey), 'same source URL, subdir, and slug');
-  add('same_name_duplicate', 0.7, groupBy(skills, skill => skill.slug), 'same normalized skill name');
+  add(
+    'same_name_duplicate',
+    0.7,
+    groupBy(skills, skill => {
+      const sameSlug = skills.filter(other => other.slug === skill.slug);
+      const distinctHashes = new Set(sameSlug.map(contentHash).filter(Boolean));
+      return distinctHashes.size > 1 ? skill.slug : null;
+    }),
+    'same normalized skill name with different content'
+  );
 
   return groups;
 }
@@ -197,5 +256,6 @@ module.exports = {
   detectDuplicateGroups,
   detectVersionDrift,
   normalizeSourceUrl,
+  sourceTrustScore,
   sourceKey,
 };

@@ -10,6 +10,7 @@ const { loadJsonRules, scanSkillForRisks } = require('../src/doctor/risk-lite');
 const { detectConflicts } = require('../src/doctor/conflict');
 const { detectZombies } = require('../src/doctor/zombie');
 const { DEFAULT_CONFLICT_RULES } = require('../src/doctor/rules');
+const phase2 = require('../src/doctor/phase2');
 
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'target', 'dist', 'build', '.cache', '.DS_Store']);
 
@@ -204,6 +205,31 @@ CREATE TABLE IF NOT EXISTS reports (
   created_at TEXT NOT NULL,
   summary_json TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS duplicate_groups (
+  id TEXT PRIMARY KEY,
+  strategy TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  canonical_skill_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (canonical_skill_id) REFERENCES skill_records(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_duplicate_groups_strategy ON duplicate_groups(strategy);
+CREATE INDEX IF NOT EXISTS idx_duplicate_groups_canonical_skill_id ON duplicate_groups(canonical_skill_id);
+
+CREATE TABLE IF NOT EXISTS duplicate_group_members (
+  group_id TEXT NOT NULL,
+  skill_id TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'candidate',
+  confidence REAL NOT NULL DEFAULT 1.0,
+  added_at TEXT NOT NULL,
+  PRIMARY KEY (group_id, skill_id),
+  FOREIGN KEY (group_id) REFERENCES duplicate_groups(id) ON DELETE CASCADE,
+  FOREIGN KEY (skill_id) REFERENCES skill_records(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_duplicate_group_members_skill_id ON duplicate_group_members(skill_id);
+CREATE INDEX IF NOT EXISTS idx_duplicate_group_members_added_at ON duplicate_group_members(added_at);
 `);
   return db;
 }
@@ -325,6 +351,22 @@ function parseManuallyPinned(frontmatter) {
   return false;
 }
 
+function usageSignalsFor(candidatePath, rootType, agent, modifiedAt, frontmatter) {
+  const isAgentGlobal = rootType === 'agent_global';
+  const isProjectLocal = rootType === 'project_local';
+  const modifiedMs = Date.parse(modifiedAt || 0);
+  const recentWindowMs = 90 * 24 * 60 * 60 * 1000;
+  return {
+    installedInAgents: isAgentGlobal && agent ? [agent] : [],
+    installedInProjects: isProjectLocal ? [path.dirname(candidatePath)] : [],
+    presetCount: Number(frontmatter.preset_count || frontmatter.presetCount || 0),
+    hasRecentModification: modifiedMs > 0 ? Date.now() - modifiedMs <= recentWindowMs : false,
+    lastActivityLogAt: frontmatter.last_activity_at || frontmatter.lastActivityLogAt || null,
+    manuallyPinned: parseManuallyPinned(frontmatter),
+    confidence: isAgentGlobal || isProjectLocal ? 0.6 : 0.3,
+  };
+}
+
 function inferNameDescription(dir, text, frontmatter) {
   const lines = text.split(/\r?\n/);
   const heading = lines.find(l => /^#\s+/.test(l));
@@ -356,18 +398,21 @@ function parseSkillCandidate(candidate) {
   const slug = slugify(fm.data.id || fm.data.slug || name || path.basename(candidate.path));
   const hashResult = computeHashes(candidate.path);
   const stat = fs.statSync(candidate.path);
+  const modifiedAt = stat.mtime?.toISOString?.() || null;
+  const rootType = rootTypeFor(candidate.path);
+  const agent = inferAgent(candidate.path);
   const skill = {
     id: '', upstreamSkillId: null, name, slug, description,
     source: { type: fm.data.source ? 'git' : 'unknown', url: fm.data.source || fm.data.source_url || null, subdir: fm.data.subdir || null, ref: fm.data.ref || fm.data.version || null, commit: fm.data.commit || null },
-    location: { path: candidate.path, root: candidate.root, rootType: rootTypeFor(candidate.path), agent: inferAgent(candidate.path), isSymlink: false, symlinkTarget: null },
+    location: { path: candidate.path, root: candidate.root, rootType, agent, isSymlink: false, symlinkTarget: null },
     version: fm.data.version || null, sourceRef: fm.data.ref || null, sourceCommit: fm.data.commit || null, sourceTreeSha: fm.data.tree_sha || null,
     frontmatter: fm.data, tags: parseTags(fm.data), presets: [], agentTargets: [], files: hashResult.files,
     hashes: { contentSha256: hashResult.contentSha256, normalizedTextSha256: hashResult.normalizedTextSha256, semanticFingerprint: {} },
-    capabilities: [], usage: { installedInAgents: [], installedInProjects: [], presetCount: 0, hasRecentModification: true, manuallyPinned: parseManuallyPinned(fm.data), confidence: 0 },
-    createdAt: stat.birthtime?.toISOString?.() || null, modifiedAt: stat.mtime?.toISOString?.() || null, lastSeenAt: now, lastUsedAt: null, status: 'active',
+    capabilities: [], usage: usageSignalsFor(candidate.path, rootType, agent, modifiedAt, fm.data),
+    createdAt: stat.birthtime?.toISOString?.() || null, modifiedAt, lastSeenAt: now, lastUsedAt: null, status: 'active',
     _scan: { mainFile, text, frontmatterError: fm.error, hasSkillMd: candidate.hasSkillMd, hasReadme: candidate.hasReadme }
   };
-  skill.id = sha256(buildSkillIdentityKey(skill));
+  skill.id = sha256(`${buildSkillIdentityKey(skill)}:${normalizePath(skill.location.path)}`);
   return skill;
 }
 
@@ -440,6 +485,71 @@ function upsertFinding(db, finding, links) {
   for (const link of links) stmt.run(link.findingId || finding.id, link.skillId, link.role || 'primary', link.addedAt || at);
 }
 
+function upsertDuplicateGroup(db, group) {
+  const at = nowIso();
+  db.prepare('INSERT INTO duplicate_groups (id, strategy, confidence, canonical_skill_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET strategy=excluded.strategy, confidence=excluded.confidence, canonical_skill_id=excluded.canonical_skill_id, updated_at=excluded.updated_at')
+    .run(group.id, group.strategy, group.confidence, group.canonicalSkillId || null, at, at);
+  const stmt = db.prepare('INSERT OR REPLACE INTO duplicate_group_members (group_id, skill_id, role, confidence, added_at) VALUES (?, ?, ?, ?, ?)');
+  for (const member of group.members) stmt.run(group.id, member.skillId, member.role, member.confidence, at);
+}
+
+function duplicateFindingFromGroup(group) {
+  const at = nowIso();
+  return {
+    finding: {
+      id: sha256(`${phase2.buildParticipantIdentityKey(group.skills)}:duplicate:duplicate-detector:${group.strategy}:${group.id}`),
+      type: 'duplicate',
+      severity: group.strategy === 'exact_duplicate' ? 'medium' : 'low',
+      detectorId: 'duplicate-detector',
+      ruleId: group.strategy,
+      title: `${group.strategy.replaceAll('_', ' ')} detected`,
+      description: `Detected ${group.skills.length} related skills. Canonical suggestion: ${group.canonicalSkillId}.`,
+      signature: group.id,
+      evidence: [{ file: 'multiple-skills', text: group.skills.map(s => `${s.slug}: ${s.location?.path || s.local_path}`).join('\n'), anchor: group.strategy }],
+      recommendation: 'Review the group and keep one canonical skill before disabling duplicates.',
+      createdAt: at,
+      updatedAt: at,
+    },
+    links: group.members.map(m => ({ skillId: m.skillId, role: m.role })),
+  };
+}
+
+function driftFindingToDbFinding(drift) {
+  const at = nowIso();
+  return {
+    finding: {
+      id: drift.id,
+      type: 'version_drift',
+      severity: drift.severity,
+      detectorId: drift.detectorId,
+      ruleId: drift.ruleId,
+      title: drift.title,
+      description: drift.description,
+      signature: drift.id,
+      evidence: [{ file: 'multiple-skills', text: JSON.stringify(drift.evidence, null, 2), anchor: drift.id }],
+      recommendation: drift.recommendation,
+      createdAt: at,
+      updatedAt: at,
+    },
+    links: drift.links,
+  };
+}
+
+function runPhase2Analysis(db, skills) {
+  const groups = phase2.detectDuplicateGroups(skills);
+  const drifts = phase2.detectVersionDrift(skills);
+  for (const group of groups) {
+    upsertDuplicateGroup(db, group);
+    const made = duplicateFindingFromGroup(group);
+    upsertFinding(db, made.finding, made.links);
+  }
+  for (const drift of drifts) {
+    const made = driftFindingToDbFinding(drift);
+    upsertFinding(db, made.finding, made.links);
+  }
+  return { groups, drifts };
+}
+
 function recordRun(db, run) {
   db.prepare('INSERT INTO doctor_runs (id, started_at, finished_at, status, skill_count, finding_count, duplicate_group_count, high_count, critical_count, config_json, summary_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(run.id, run.startedAt, run.finishedAt, run.status, run.skillCount, run.findingCount, 0, run.highCount, run.criticalCount, JSON.stringify(run.config || {}), JSON.stringify(run.summary || {}));
 }
@@ -449,6 +559,9 @@ function listFindings(db, includeIgnored) { return db.prepare(`SELECT * FROM fin
 function listIgnored(db) { return db.prepare('SELECT * FROM findings WHERE ignored = 1 ORDER BY ignored_at DESC').all(); }
 function getFindingSkills(db, findingId) { return db.prepare('SELECT fs.*, sr.slug, sr.name, sr.local_path FROM finding_skills fs JOIN skill_records sr ON sr.id = fs.skill_id WHERE fs.finding_id = ? ORDER BY fs.role ASC, sr.slug ASC').all(findingId); }
 function setIgnored(db, id, ignored, reason, at) { return db.prepare('UPDATE findings SET ignored=?, ignored_reason=?, ignored_at=?, updated_at=? WHERE id=?').run(ignored ? 1 : 0, ignored ? (reason || null) : null, ignored ? at : null, at, id).changes || 0; }
+function listFindingSkills(db) { return db.prepare('SELECT * FROM finding_skills ORDER BY finding_id ASC, role ASC, skill_id ASC').all(); }
+function listDuplicateGroups(db) { return db.prepare('SELECT * FROM duplicate_groups ORDER BY confidence DESC, strategy ASC').all(); }
+function listDuplicateGroupMembers(db) { return db.prepare('SELECT * FROM duplicate_group_members ORDER BY group_id ASC, role ASC, skill_id ASC').all(); }
 
 function buildReportData(db, includeIgnored) {
   const skills = listSkills(db);
@@ -456,11 +569,51 @@ function buildReportData(db, includeIgnored) {
   const findings = rows.map(row => ({ id: row.id, type: row.type, severity: row.severity, detectorId: row.detector_id, ruleId: row.rule_id, title: row.title, description: row.description, signature: row.signature, evidence: JSON.parse(row.evidence_json || '[]'), recommendation: row.recommendation, ignored: !!row.ignored, ignoredReason: row.ignored_reason, ignoredAt: row.ignored_at, createdAt: row.created_at, updatedAt: row.updated_at, skills: getFindingSkills(db, row.id) }));
   const bySeverity = {}, byType = {};
   for (const f of findings) { bySeverity[f.severity] = (bySeverity[f.severity] || 0) + 1; byType[f.type] = (byType[f.type] || 0) + 1; }
-  return { summary: { totalSkills: skills.length, totalFindings: findings.length, bySeverity, byType }, skills, findings };
+  const duplicateGroups = listDuplicateGroups(db);
+  const duplicateGroupMembers = listDuplicateGroupMembers(db);
+  const findingSkills = listFindingSkills(db);
+  const summary = {
+    totalSkills: skills.length,
+    totalFindings: findings.length,
+    duplicateGroups: duplicateGroups.length,
+    versionDriftFindings: findings.filter(f => f.type === 'version_drift').length,
+    riskFindings: findings.filter(f => f.type === 'risk').length,
+    conflictFindings: findings.filter(f => f.type === 'conflict').length,
+    zombieCandidates: findings.filter(f => f.type === 'zombie').length,
+    ignoredFindings: rows.filter(row => row.ignored).length,
+    bySeverity,
+    byType,
+  };
+  return { summary, skills, findings, findingSkills, duplicateGroups, duplicateGroupMembers, optimizationPlan: {} };
 }
 
 function renderMarkdown(data) {
-  const lines = ['# Agent Skill Doctor Report', '', '## Summary', '', `- Total skills: ${data.summary.totalSkills}`, `- Total findings: ${data.summary.totalFindings}`, `- By severity: ${JSON.stringify(data.summary.bySeverity)}`, `- By type: ${JSON.stringify(data.summary.byType)}`, '', '## Findings', ''];
+  const lines = [
+    '# Agent Skill Doctor Report',
+    '',
+    '## Summary',
+    '',
+    `- Total skills: ${data.summary.totalSkills}`,
+    `- Total findings: ${data.summary.totalFindings}`,
+    `- Duplicate groups: ${data.summary.duplicateGroups}`,
+    `- Version drift findings: ${data.summary.versionDriftFindings}`,
+    `- Conflict findings: ${data.summary.conflictFindings}`,
+    `- Risk findings: ${data.summary.riskFindings}`,
+    `- Zombie candidates: ${data.summary.zombieCandidates}`,
+    `- Ignored findings: ${data.summary.ignoredFindings}`,
+    `- By severity: ${JSON.stringify(data.summary.bySeverity)}`,
+    `- By type: ${JSON.stringify(data.summary.byType)}`,
+    '',
+    '## Critical Risks',
+    '',
+  ];
+  const criticalRisks = data.findings.filter(f => f.type === 'risk' && f.severity === 'critical');
+  if (!criticalRisks.length) lines.push('No critical risks.', '');
+  for (const f of criticalRisks) lines.push(`- \`${f.id}\` ${f.title}`, '');
+  lines.push('## Duplicate Groups', '');
+  if (!data.duplicateGroups.length) lines.push('No duplicate groups.', '');
+  for (const group of data.duplicateGroups) lines.push(`- \`${group.id}\` ${group.strategy} confidence=${group.confidence}`);
+  lines.push('', '## Findings', '');
   if (!data.findings.length) lines.push('No findings.', '');
   for (const f of data.findings) {
     lines.push(`### ${f.severity.toUpperCase()} - ${f.title}`, '', `- ID: \`${f.id}\``, `- Type: \`${f.type}\``, `- Detector: \`${f.detectorId}\``);
@@ -492,9 +645,15 @@ function usage() {
   console.log(`agent-skill-doctor CLI
 
 Commands:
-  scan [--full] [--root <path>] [--json]
+  scan [--full] [--rebuild-index] [--root <path>] [--json]
   diagnose [--json] [--ci] [--fail-on high|critical|medium] [--rules <dir>] [--include-ignored]
   report [--format md|json] [--output <path>] [--include-ignored]
+  duplicates [--json]
+  risks [--json] [--ci] [--fail-on high|critical|medium]
+  conflicts [--json] [--ci] [--fail-on high|critical|medium]
+  zombies [--json] [--ci] [--fail-on high|critical|medium]
+  plan [--safe|--normal|--aggressive] [--json] [--output <path>]
+  apply <plan.json> --dry-run [--json]
   ignore <finding-id> [--reason <text>]
   unignore <finding-id>
   ignored list
@@ -525,6 +684,9 @@ function runScan(args) {
   const { config, db } = open();
   const startedAt = nowIso();
   const roots = args.root ? [expandHome(args.root)] : config.roots;
+  if (args['rebuild-index']) {
+    db.exec('DELETE FROM duplicate_group_members; DELETE FROM duplicate_groups; DELETE FROM finding_skills; DELETE FROM findings; DELETE FROM skill_records;');
+  }
   const skills = scanRoots(roots, { maxDepth: config.scan.maxDepth, full: !!args.full });
   let findingCount = 0, highCount = 0, criticalCount = 0;
   for (const skill of skills) {
@@ -563,11 +725,14 @@ function rowToSkill(row) {
   };
 }
 
+function listSkillObjects(db) {
+  return db.prepare('SELECT * FROM skill_records ORDER BY slug ASC').all().map(rowToSkill);
+}
+
 function runDiagnose(args) {
   runScan({ ...args, json: false });
   const { config, db } = open();
-  const skills = db.prepare('SELECT * FROM skill_records ORDER BY slug ASC').all().map(rowToSkill);
-  const allFindings = [];
+  const skills = listSkillObjects(db);
 
   // Risk scan
   const rulesDir = args.rules ? path.resolve(expandHome(args.rules)) : path.join(process.cwd(), 'rules/default');
@@ -589,12 +754,17 @@ function runDiagnose(args) {
   const zombieFindings = detectZombies(skills);
   for (const f of zombieFindings) upsertFinding(db, f, f.links || []);
 
+  // Duplicate and version drift detection
+  const phase2Result = runPhase2Analysis(db, skills);
+
   const data = buildReportData(db, !!args['include-ignored']);
   const summary = {
     ...data.summary,
     riskFindings: riskFindings.length,
     conflictFindings: conflictFindings.length,
     zombieCandidates: zombieFindings.length,
+    duplicateGroups: phase2Result.groups.length,
+    versionDriftFindings: phase2Result.drifts.length,
   };
 
   if (args.json) console.log(JSON.stringify({ ...data, summary }, null, 2));
@@ -616,6 +786,159 @@ function runReport(args) {
   const { config, db } = open();
   const result = writeReport(db, { format: args.format || 'md', output: args.output ? path.resolve(expandHome(args.output)) : null, includeIgnored: !!args['include-ignored'], reportsDir: config.reportsDir });
   console.log(`Report written: ${result.path}`);
+  if (args.ci) {
+    const rows = listFindings(db, !!args['include-ignored']);
+    process.exit(exitCodeForFindings(rows, args['fail-on'] || 'high', !!args['include-ignored']));
+  }
+}
+
+function outputJsonOrText(args, jsonValue, textLines) {
+  if (args.json) console.log(JSON.stringify(jsonValue, null, 2));
+  else console.log(textLines.join('\n'));
+}
+
+function runDuplicates(args) {
+  const { db } = open();
+  const groups = listDuplicateGroups(db).map(group => ({
+    ...group,
+    members: db.prepare('SELECT dgm.*, sr.slug, sr.name, sr.local_path FROM duplicate_group_members dgm JOIN skill_records sr ON sr.id = dgm.skill_id WHERE dgm.group_id = ? ORDER BY role ASC, sr.slug ASC').all(group.id),
+  }));
+  if (!groups.length) return outputJsonOrText(args, [], ['No duplicate groups. Run: agent-skill-doctor diagnose']);
+  outputJsonOrText(args, groups, groups.flatMap(group => [
+    `${group.id}  ${group.strategy}  confidence=${group.confidence}`,
+    ...group.members.map(member => `  - ${member.role}: ${member.slug}  ${member.local_path}`),
+  ]));
+}
+
+function runFindingsByType(args, type) {
+  const { db } = open();
+  const rows = db.prepare('SELECT * FROM findings WHERE type = ? AND ignored = 0 ORDER BY severity DESC, updated_at DESC').all(type);
+  const findings = rows.map(row => ({
+    id: row.id,
+    type: row.type,
+    severity: row.severity,
+    ruleId: row.rule_id,
+    title: row.title,
+    description: row.description,
+    evidence: JSON.parse(row.evidence_json || '[]'),
+    skills: getFindingSkills(db, row.id),
+  }));
+  outputJsonOrText(
+    args,
+    findings,
+    findings.length ? findings.map(f => `${f.id}  ${f.severity}  ${f.ruleId || ''}  ${f.title}`) : [`No ${type} findings.`]
+  );
+  if (args.ci) process.exit(exitCodeForFindings(rows, args['fail-on'] || 'high', false));
+}
+
+function expectedStateForSkill(row) {
+  return {
+    upstreamSkillId: row.upstream_skill_id || null,
+    localPath: row.local_path,
+    contentHash: row.content_hash,
+    normalizedHash: row.normalized_hash,
+    sourceCommit: row.source_commit || null,
+    modifiedAt: row.modified_at || null,
+  };
+}
+
+function buildOptimizationPlan(db, mode) {
+  const at = nowIso();
+  const actions = [];
+  const duplicateMembers = db.prepare(`
+SELECT dgm.*, dg.strategy, dg.canonical_skill_id, sr.upstream_skill_id, sr.slug, sr.name, sr.local_path, sr.content_hash, sr.normalized_hash, sr.source_commit, sr.modified_at
+FROM duplicate_group_members dgm
+JOIN duplicate_groups dg ON dg.id = dgm.group_id
+JOIN skill_records sr ON sr.id = dgm.skill_id
+WHERE dgm.role = 'candidate'
+ORDER BY dg.confidence DESC, sr.slug ASC
+`).all();
+
+  for (const member of duplicateMembers) {
+    const actionType = mode === 'aggressive' ? 'remove_from_preset' : mode === 'normal' ? 'disable' : 'tag';
+    actions.push({
+      id: sha256(`${member.group_id}:${member.skill_id}:${actionType}`),
+      type: actionType,
+      targetSkillId: member.skill_id,
+      reason: `Duplicate candidate in ${member.strategy}; canonical skill is ${member.canonical_skill_id}.`,
+      risk: actionType === 'tag' ? 'safe' : 'needs_review',
+      expectedState: expectedStateForSkill(member),
+      dryRunCommand: `agent-skill-doctor apply plan.json --dry-run --target ${member.skill_id}`,
+      executeCommand: null,
+    });
+  }
+
+  return {
+    id: sha256(`plan:${at}:${actions.map(a => a.id).join('\n')}`),
+    createdAt: at,
+    mode,
+    summary: `Generated ${actions.length} safe governance action(s).`,
+    actions,
+    estimatedImpact: {
+      skillsToDisable: actions.filter(a => a.type === 'disable').length,
+      skillsToRemove: 0,
+      duplicatesToMerge: actions.length,
+      riskySkills: db.prepare("SELECT COUNT(*) AS count FROM findings WHERE type = 'risk' AND ignored = 0").get().count,
+    },
+  };
+}
+
+function runPlan(args) {
+  const { config, db } = open();
+  const mode = args.aggressive ? 'aggressive' : args.normal ? 'normal' : 'safe';
+  const plan = buildOptimizationPlan(db, mode);
+  const outPath = args.output ? path.resolve(expandHome(args.output)) : null;
+  if (outPath) {
+    ensureDir(path.dirname(outPath));
+    fs.writeFileSync(outPath, JSON.stringify(plan, null, 2), 'utf8');
+  }
+  if (args.json) console.log(JSON.stringify(plan, null, 2));
+  else {
+    if (outPath) console.log(`Plan written: ${outPath}`);
+    console.log(plan.summary);
+  }
+}
+
+function currentStateForPath(localPath) {
+  if (!localPath || !fs.existsSync(localPath) || !fs.statSync(localPath).isDirectory()) {
+    return { exists: false, contentHash: null, normalizedHash: null, modifiedAt: null };
+  }
+  const hashes = computeHashes(localPath);
+  const stat = fs.statSync(localPath);
+  return {
+    exists: true,
+    contentHash: hashes.contentSha256,
+    normalizedHash: hashes.normalizedTextSha256,
+    modifiedAt: stat.mtime?.toISOString?.() || null,
+  };
+}
+
+function actionIsStale(action) {
+  const expected = action.expectedState || {};
+  const current = currentStateForPath(expected.localPath);
+  if (!current.exists) return true;
+  return Boolean(
+    expected.contentHash && current.contentHash !== expected.contentHash
+  );
+}
+
+function runApply(args) {
+  const planPath = args._[1] ? path.resolve(expandHome(args._[1])) : null;
+  if (!planPath) { console.error('apply requires <plan.json>'); process.exit(3); }
+  if (!args['dry-run']) { console.error('MVP apply only supports --dry-run.'); process.exit(3); }
+  const plan = JSON.parse(fs.readFileSync(planPath, 'utf8'));
+  const actions = (plan.actions || []).map(action => ({
+    id: action.id,
+    type: action.type,
+    targetSkillId: action.targetSkillId,
+    status: actionIsStale(action) ? 'stale_action' : 'dry_run',
+    reason: action.reason,
+  }));
+  const result = { planId: plan.id, dryRun: true, actions };
+  if (args.json) console.log(JSON.stringify(result, null, 2));
+  else {
+    for (const action of actions) console.log(`${action.status}  ${action.type}  ${action.targetSkillId}`);
+  }
 }
 
 function runIgnore(args, ignored) {
@@ -643,6 +966,12 @@ function main() {
     if (command === 'scan') return runScan(args);
     if (command === 'diagnose') return runDiagnose(args);
     if (command === 'report') return runReport(args);
+    if (command === 'duplicates') return runDuplicates(args);
+    if (command === 'risks') return runFindingsByType(args, 'risk');
+    if (command === 'conflicts') return runFindingsByType(args, 'conflict');
+    if (command === 'zombies') return runFindingsByType(args, 'zombie');
+    if (command === 'plan') return runPlan(args);
+    if (command === 'apply') return runApply(args);
     if (command === 'ignore') return runIgnore(args, true);
     if (command === 'unignore') return runIgnore(args, false);
     if (command === 'ignored') return runIgnored(args);

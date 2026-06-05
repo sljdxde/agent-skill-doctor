@@ -6,6 +6,7 @@ const {
   buildParticipantIdentityKey,
   detectDuplicateGroups,
   detectVersionDrift,
+  sourceTrustScore,
 } = require('../src/doctor/phase2');
 
 function skill(overrides) {
@@ -48,4 +49,18 @@ test('detects version drift by same slug and different hashes', () => {
   const findings = detectVersionDrift([a, b]);
   assert.equal(findings.length, 1);
   assert.equal(findings[0].type, 'version_drift');
+});
+
+test('does not create same-name duplicate when content hash is identical', () => {
+  const a = skill({ id: 'a', slug: 'alpha', hash: 'same' });
+  const b = skill({ id: 'b', slug: 'alpha', hash: 'same' });
+  const groups = detectDuplicateGroups([a, b]);
+  assert.equal(groups.filter(g => g.strategy === 'same_name_duplicate').length, 0);
+  assert.equal(groups.filter(g => g.strategy === 'exact_duplicate').length, 1);
+});
+
+test('sourceTrustScore scores official agent repositories higher than personal GitHub repos', () => {
+  const official = skill({ id: 'a', slug: 'alpha', source: { type: 'git', url: 'https://github.com/openai/codex' } });
+  const personal = skill({ id: 'b', slug: 'beta', source: { type: 'git', url: 'https://github.com/example/skill' } });
+  assert.ok(sourceTrustScore(official) > sourceTrustScore(personal));
 });

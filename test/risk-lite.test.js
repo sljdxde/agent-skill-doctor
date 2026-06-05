@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { getMatchedPatternId, loadJsonRules } = require('../src/doctor/risk-lite');
+const { getMatchedPatternId, loadJsonRules, scanSkillForRisks } = require('../src/doctor/risk-lite');
 
 test('getMatchedPatternId uses pattern.id when valid', () => {
   const result = getMatchedPatternId('test-rule', { id: 'env-file' }, 0);
@@ -41,4 +41,28 @@ test('loadJsonRules validates version', () => {
   // This test relies on the actual rule files having version: 1
   const rules = loadJsonRules('rules/default');
   assert.ok(rules.length > 0);
+});
+
+test('getMatchedPatternId falls back to hash for regex patterns', () => {
+  const result = getMatchedPatternId('test-rule', { regex: '\\.env' }, 0);
+  assert.ok(result.startsWith('test-rule_'));
+  assert.notEqual(result, 'test-rule_0');
+});
+
+test('scanSkillForRisks supports regex patterns', () => {
+  const skill = {
+    id: 'skill-a',
+    slug: 'alpha',
+    source: { type: 'unknown' },
+    location: { path: __filename, root: __dirname, rootType: 'unknown' },
+    hashes: { contentSha256: 'h1' },
+    files: [{ path: __filename, relativePath: 'risk-lite.test.js' }],
+  };
+  const findings = scanSkillForRisks(skill, [{
+    id: 'regex-rule',
+    severity: 'high',
+    patterns: [{ id: 'regex-pattern', regex: 'scanSkillForRisks\\s+supports' }],
+  }]);
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].ruleId, 'regex-rule');
 });
