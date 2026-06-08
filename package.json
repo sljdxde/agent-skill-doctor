@@ -3,10 +3,29 @@
   "version": "0.1.0",
   "description": "Diagnostic and governance CLI for AI agent skills",
   "type": "commonjs",
+  "main": "./src/doctor/index.js",
+  "exports": {
+    ".": "./src/doctor/index.js",
+    "./phase2": "./src/doctor/phase2.js",
+    "./conflict": "./src/doctor/conflict.js",
+    "./zombie": "./src/doctor/zombie.js",
+    "./risk": "./src/doctor/risk-lite.js",
+    "./rules": "./src/doctor/rules.js"
+  },
   "bin": {
     "agent-skill-doctor": "./bin/agent-skill-doctor.js",
     "skill-doctor": "./bin/agent-skill-doctor.js"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "rules/",
+    "examples/",
+    "README.md",
+    "LICENSE",
+    "NOTICE.md",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "start": "node ./bin/agent-skill-doctor.js",
     "scan": "node ./bin/agent-skill-doctor.js scan --json",
@@ -15,7 +34,21 @@
     "phase2": "node ./bin/agent-skill-doctor-phase2.js analyze",
     "phase3": "node ./bin/agent-skill-doctor-phase3.js conflicts",
     "risk": "node ./bin/agent-skill-doctor-risk.js scan",
-    "test": "node --test"
+    "test": "node --test",
+    "publish:npm": "npm publish"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "skill",
+    "diagnostic",
+    "governance",
+    "cli",
+    "sqlite"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anthropics/agent-skill-doctor.git"
   },
   "engines": {
     "node": ">=22.5.0"

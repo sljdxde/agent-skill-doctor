@@ -1,0 +1,33 @@
+# Test files
+test/
+*.test.js
+
+# Development files
+.github/
+.git/
+.gitignore
+.DS_Store
+.env
+
+# Build artifacts
+dist/
+build/
+coverage/
+
+# Database files
+*.db
+doctor.db
+reports/
+
+# Logs
+*.log
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+Thumbs.db
+Desktop.ini
