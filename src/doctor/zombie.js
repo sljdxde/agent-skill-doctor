@@ -105,14 +105,16 @@ function detectZombies(skills) {
     const reasons = [];
 
     const usage = skill.usage || {};
-    if ((usage.presetCount || 0) === 0) reasons.push('not in any preset');
-    if (!usage.installedInAgents || usage.installedInAgents.length === 0) reasons.push('not installed in any agent');
-    if (!usage.installedInProjects || usage.installedInProjects.length === 0) reasons.push('not installed in any project');
-    if (!usage.hasRecentModification) reasons.push('no recent modifications');
-    if (!usage.lastActivityLogAt) reasons.push('no activity log entries');
-    if (descriptionQuality(skill) < 40) reasons.push('poor description quality');
+    const factors = [];
+    if ((usage.presetCount || 0) === 0) { reasons.push('not in any preset'); factors.push('presetCount==0 (+0.25)'); }
+    if (!usage.installedInAgents || usage.installedInAgents.length === 0) { reasons.push('not installed in any agent'); factors.push('noAgents (+0.20)'); }
+    if (!usage.installedInProjects || usage.installedInProjects.length === 0) { reasons.push('not installed in any project'); factors.push('noProjects (+0.20)'); }
+    if (!usage.hasRecentModification) { reasons.push('no recent modifications'); factors.push('noModification (+0.15)'); }
+    if (!usage.lastActivityLogAt) { reasons.push('no activity log entries'); factors.push('noActivityLog (+0.15)'); }
+    if (descriptionQuality(skill) < 40) { reasons.push('poor description quality'); factors.push('lowDescriptionQuality (+0.05)'); }
 
     const reasonText = reasons.join('; ');
+    const factorText = factors.join('; ');
     const signature = sha256(`zombie:${level}:${Math.round(score * 100)}:${skill.slug || ''}`);
     const id = sha256(`${participantKey}:zombie:zombie-detector:${level}:${signature}`);
 
@@ -123,7 +125,7 @@ function detectZombies(skills) {
       detectorId: 'zombie-detector',
       ruleId: level,
       title: `Zombie candidate: ${skill.name || skill.slug}`,
-      description: `${zombieLevelDescription(level)} Score: ${score.toFixed(2)}. ${reasonText}.`,
+      description: `${zombieLevelDescription(level)} Score: ${score.toFixed(2)}. Factors: ${factorText}.`,
       signature,
       evidence: [{
         file: skill.location?.path || skill.local_path || '',
