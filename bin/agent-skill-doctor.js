@@ -116,6 +116,8 @@ function loadConfig() {
     '~/.cursor/skills',
     '~/.opencode/skills',
     '~/.agent/skills',
+    '~/.agents/skills',
+    '~/.agents/skills-core',
     '~/.windsurf/skills',
     '~/.aider/skills',
     '~/.continue/skills',
@@ -353,7 +355,12 @@ function rootTypeFor(p) {
   if (n.includes('/.claude/') || n.includes('/.codex/') || n.includes('/.cursor/') || n.includes('/.opencode/') ||
       n.includes('/.agent/') || n.includes('/.windsurf/') || n.includes('/.aider/') ||
       n.includes('/.continue/') || n.includes('/.cody/') || n.includes('/.copilot/')) return 'agent_global';
-  if (n.includes('/.agents/')) return 'project_local';
+  if (n.includes('/.agents/')) {
+    // ~/.agents/ is global, <cwd>/.agents/ is project-local
+    const home = (os.homedir() || '').replace(/\\/g, '/');
+    if (n.startsWith(home + '/')) return 'agent_global';
+    return 'project_local';
+  }
   return 'unknown';
 }
 
@@ -368,6 +375,7 @@ function inferAgent(p) {
   if (n.includes('/.continue/')) return 'continue';
   if (n.includes('/.cody/')) return 'cody';
   if (n.includes('/.copilot/')) return 'copilot';
+  if (n.includes('/.agents/')) return 'agents';
   if (n.includes('/.agent/')) return 'agent';
   return null;
 }
