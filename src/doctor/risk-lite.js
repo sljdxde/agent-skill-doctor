@@ -95,7 +95,7 @@ function scanSkillForRisks(skill, rules) {
           detectorId: 'risk-detector',
           ruleId: rule.id,
           title: rule.title || 'Risk pattern detected',
-          description: rule.description || `Detected risk pattern ${patternId}.`,
+          description: `${rule.description || 'Risk pattern detected.'} [matched: ${patternId}]`,
           signature,
           evidence: [{ file: relativeFile, lineStart: line, lineEnd: line, text: matched, anchor: normalizeAnchor(matched), occurrenceId: sha256(`${id}:${line}`) }],
           recommendation: rule.recommendation || 'Review the skill before enabling it automatically.',
