@@ -505,6 +505,12 @@ function parseSkillCandidate(candidate) {
       if (pluginInfo) {
         skill.source = { type: 'plugin', url: pluginInfo.homepage || null, subdir: null, ref: null, commit: null };
         skill._sourcePlugin = pluginInfo.owner ? `${pluginInfo.owner}/${pluginInfo.name}` : pluginInfo.name;
+      } else if (/[/\\]\.system[/\\]/.test(candidate.path)) {
+        // Skills in .system/ directories are built-in agent skills → official
+        const agentSourceMap = { codex: 'openai/skills', claude: 'anthropics/skills' };
+        const agentSource = agentSourceMap[agent] || `${agent}/system-skills`;
+        skill.source = { type: 'builtin', url: null, subdir: null, ref: null, commit: null };
+        skill._sourcePlugin = agentSource;
       }
     }
   }
