@@ -797,18 +797,23 @@ function renderHtml(data, lang, reportPath) {
     ${rootCards || `<p>${D('html.noSkills')}</p>`}
   `;
 
-  // Summary cards with collapsible details and tooltips
+  // Summary cards: overview first, then actionable (red→orange→yellow→green), then informational (gray)
   const scanRootCount = skillsByRoot ? Object.keys(skillsByRoot).length : 0;
   const cardDefs = [
+    // Overview
     { key: 'report.scanDirs', descKey: 'dashboard.scanDirs.desc', value: scanRootCount, color: '#0ea5e9', tooltipTitle: null, tooltipText: null, filterFn: null },
     { key: 'report.scanSkills', descKey: 'dashboard.scanSkills.desc', value: data.summary.totalSkills, color: '#3b82f6', tooltipTitle: null, tooltipText: null, filterFn: null },
     { key: 'report.totalFindings', descKey: 'dashboard.totalFindings.desc', value: data.summary.totalFindings, color: '#8b5cf6', tooltipTitle: null, tooltipText: null, filterFn: null },
-    { key: 'report.riskFindings', descKey: 'dashboard.riskFindings.desc', value: data.summary.riskFindings, color: '#ef4444', tooltipTitle: 'tooltip.risk.title', tooltipText: 'tooltip.risk.text', filterFn: f => f.type === 'risk' },
+    // Actionable — high priority (red)
+    { key: 'report.conflictFindings', descKey: 'dashboard.conflictFindings.desc', value: data.summary.conflictFindings, color: '#ef4444', tooltipTitle: 'tooltip.conflict.title', tooltipText: 'tooltip.conflict.text', filterFn: f => f.type === 'conflict' },
+    // Actionable — medium priority (orange)
     { key: 'report.zombieCandidates', descKey: 'dashboard.zombieCandidates.desc', value: data.summary.zombieCandidates, color: '#f59e0b', tooltipTitle: 'tooltip.zombie.title', tooltipText: 'tooltip.zombie.text', filterFn: f => f.type === 'zombie' },
-    { key: 'report.descriptionQualityFindings', descKey: 'dashboard.descriptionQualityFindings.desc', value: data.summary.descriptionQualityFindings, color: '#a855f7', tooltipTitle: 'tooltip.descriptionQuality.title', tooltipText: 'tooltip.descriptionQuality.text', filterFn: f => f.type === 'description_quality' },
-    { key: 'report.duplicateFindings', descKey: 'dashboard.duplicateFindings.desc', value: data.summary.duplicateFindings, color: '#6366f1', tooltipTitle: 'tooltip.duplicate.title', tooltipText: 'tooltip.duplicate.text', filterFn: f => f.type === 'duplicate' },
-    { key: 'report.versionDriftFindings', descKey: 'dashboard.versionDriftFindings.desc', value: data.summary.versionDriftFindings, color: '#14b8a6', tooltipTitle: 'tooltip.versionDrift.title', tooltipText: 'tooltip.versionDrift.text', filterFn: f => f.type === 'version_drift' },
-    { key: 'report.conflictFindings', descKey: 'dashboard.conflictFindings.desc', value: data.summary.conflictFindings, color: '#10b981', tooltipTitle: 'tooltip.conflict.title', tooltipText: 'tooltip.conflict.text', filterFn: f => f.type === 'conflict' },
+    // Actionable — lower priority (yellow)
+    { key: 'report.duplicateFindings', descKey: 'dashboard.duplicateFindings.desc', value: data.summary.duplicateFindings, color: '#eab308', tooltipTitle: 'tooltip.duplicate.title', tooltipText: 'tooltip.duplicate.text', filterFn: f => f.type === 'duplicate' },
+    { key: 'report.versionDriftFindings', descKey: 'dashboard.versionDriftFindings.desc', value: data.summary.versionDriftFindings, color: '#84cc16', tooltipTitle: 'tooltip.versionDrift.title', tooltipText: 'tooltip.versionDrift.text', filterFn: f => f.type === 'version_drift' },
+    // Informational — not actionable (gray, with ? tooltip)
+    { key: 'report.riskFindings', descKey: 'dashboard.riskFindings.desc', value: data.summary.riskFindings, color: '#6b7280', tooltipTitle: 'tooltip.risk.title', tooltipText: 'tooltip.risk.text', filterFn: f => f.type === 'risk', informational: true },
+    { key: 'report.descriptionQualityFindings', descKey: 'dashboard.descriptionQualityFindings.desc', value: data.summary.descriptionQualityFindings, color: '#6b7280', tooltipTitle: 'tooltip.descriptionQuality.title', tooltipText: 'tooltip.descriptionQuality.text', filterFn: f => f.type === 'description_quality', informational: true },
   ];
 
   const summaryCards = cardDefs.map(c => {
@@ -830,8 +835,9 @@ function renderHtml(data, lang, reportPath) {
       const dirList = Object.keys(skillsByRoot).sort().map(r => `<div class="card-item"><code>${escapeHtml(r)}</code> <span class="card-item-skills">(${skillsByRoot[r].skills.length})</span></div>`).join('');
       detailSection = `<details class="card-details"><summary>${D('html.expandDetails')}</summary><div class="card-detail-list">${dirList}</div></details>`;
     }
-    const cardContent = `<div class="stat-value">${c.value}</div><div class="stat-label">${D(c.key)} ${tip}</div><div class="stat-desc">${Dn(c.descKey)}</div>${detailSection}`;
-    return `<div class="stat-card" style="border-left:4px solid ${c.color}">${cardContent}</div>`;
+    const infoBadge = c.informational ? `<span style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#6b728033;color:var(--muted);font-size:0.6rem;font-weight:700;margin-left:0.25rem;cursor:help" title="${lang === 'zh' ? '仅供参考，不参与技能优化决策' : 'Informational only, not actionable'}">?</span>` : '';
+    const cardContent = `<div class="stat-value">${c.value}</div><div class="stat-label">${D(c.key)} ${tip}${infoBadge}</div><div class="stat-desc">${Dn(c.descKey)}</div>${detailSection}`;
+    return `<div class="stat-card" style="border-left:4px solid ${c.color}${c.informational ? ';opacity:0.75' : ''}">${cardContent}</div>`;
   }).join('\n');
 
   // Severity bar
