@@ -68,7 +68,8 @@ function findPattern(original, lower, pattern) {
 }
 
 function scanSkillForRisks(skill, rules) {
-  const findings = [];
+  // Collect all matches grouped by rule+pattern to deduplicate
+  const matchMap = new Map(); // key: `${ruleId}:${patternId}` -> { rule, patternId, evidence[] }
   for (const file of skill.files || []) {
     const filePath = file.path;
     if (!filePath || !fs.existsSync(filePath) || !isTextLike(filePath)) continue;
@@ -84,25 +85,38 @@ function scanSkillForRisks(skill, rules) {
         if (!match) continue;
         const matched = match.text;
         const patternId = getMatchedPatternId(rule.id, pattern, i);
-        const participantKey = buildParticipantIdentityKey([skill]);
-        const signature = sha256(`${relativeFile}:${patternId}:${normalizeAnchor(matched)}`);
-        const id = sha256(`${participantKey}:risk:risk-detector:${rule.id}:${signature}`);
         const line = lineNumberAt(original, match.index);
-        findings.push({
-          id,
-          type: 'risk',
-          severity: rule.severity || 'medium',
-          detectorId: 'risk-detector',
-          ruleId: rule.id,
-          title: rule.title || 'Risk pattern detected',
-          description: `${rule.description || 'Risk pattern detected.'} [matched: ${patternId}]`,
-          signature,
-          evidence: [{ file: relativeFile, lineStart: line, lineEnd: line, text: matched, anchor: normalizeAnchor(matched), occurrenceId: sha256(`${id}:${line}`) }],
-          recommendation: rule.recommendation || 'Review the skill before enabling it automatically.',
-          skillId: skill.id,
+        const mapKey = `${rule.id}:${patternId}`;
+        if (!matchMap.has(mapKey)) {
+          matchMap.set(mapKey, { rule, patternId, evidence: [] });
+        }
+        matchMap.get(mapKey).evidence.push({
+          file: relativeFile, lineStart: line, lineEnd: line,
+          text: matched, anchor: normalizeAnchor(matched),
         });
       }
     }
+  }
+
+  // Generate one finding per rule+pattern per skill
+  const findings = [];
+  const participantKey = buildParticipantIdentityKey([skill]);
+  for (const [, { rule, patternId, evidence }] of matchMap) {
+    const signature = sha256(`${rule.id}:${patternId}:${evidence.map(e => `${e.file}:${e.lineStart}`).join(',')}`);
+    const id = sha256(`${participantKey}:risk:risk-detector:${rule.id}:${signature}`);
+    findings.push({
+      id,
+      type: 'risk',
+      severity: rule.severity || 'medium',
+      detectorId: 'risk-detector',
+      ruleId: rule.id,
+      title: rule.title || 'Risk pattern detected',
+      description: `${rule.description || 'Risk pattern detected.'} [matched: ${patternId}]`,
+      signature,
+      evidence: evidence.map(e => ({ ...e, occurrenceId: sha256(`${id}:${e.file}:${e.lineStart}`) })),
+      recommendation: rule.recommendation || 'Review the skill before enabling it automatically.',
+      skillId: skill.id,
+    });
   }
   return findings;
 }
