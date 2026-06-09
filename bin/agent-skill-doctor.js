@@ -639,7 +639,7 @@ function renderMarkdown(data, lang) {
   return lines.join('\n');
 }
 
-function renderHtml(data, lang) {
+function renderHtml(data, lang, reportPath) {
   const severityColors = { critical: '#dc2626', high: '#ea580c', medium: '#ca8a04', low: '#2563eb', info: '#6b7280' };
   const totalForBar = data.summary.totalFindings || 1;
 
@@ -659,16 +659,114 @@ function renderHtml(data, lang) {
     return `<span data-lang="en">${enText}</span><span data-lang="zh">${zhText}</span>`;
   };
 
-  // Summary cards
-  const cardKeys = [
-    { key: 'report.totalSkills', value: data.summary.totalSkills, color: '#3b82f6' },
-    { key: 'report.totalFindings', value: data.summary.totalFindings, color: '#8b5cf6' },
-    { key: 'report.duplicateGroups', value: data.summary.duplicateGroups, color: '#6366f1' },
-    { key: 'report.riskFindings', value: data.summary.riskFindings, color: '#ef4444' },
-    { key: 'report.zombieCandidates', value: data.summary.zombieCandidates, color: '#f59e0b' },
-    { key: 'report.conflictFindings', value: data.summary.conflictFindings, color: '#10b981' },
+  // Translate finding title
+  const translateTitle = (title) => {
+    const key = `finding.${title}`;
+    const enText = t(key, 'en');
+    const zhText = t(key, 'zh');
+    const en = enText === key ? title : enText;
+    const zh = zhText === key ? title : zhText;
+    if (en === zh) return escapeHtml(en);
+    return `<span data-lang="en">${escapeHtml(en)}</span><span data-lang="zh">${escapeHtml(zh)}</span>`;
+  };
+
+  // Tooltip helper: renders a ? icon with hover tooltip
+  const tooltip = (titleKey, textKey) => {
+    return `<span class="tip-wrap"><span class="tip-icon">?</span><span class="tip-box"><strong>${D(titleKey)}</strong><br>${Dn(textKey)}</span></span>`;
+  };
+
+  // Skill classification
+  const OFFICIAL_ORGS = /github\.com\/(anthropics|openai|github|google-gemini)\//i;
+  const GITHUB_URL = /github\.com\//i;
+
+  function classifySkill(skill) {
+    const raw = typeof skill.raw_json === 'string' ? JSON.parse(skill.raw_json) : (skill.raw_json || {});
+    const sourceUrl = raw.source?.url || skill.source_url || '';
+    const rootType = raw.location?.rootType || skill.root_type || '';
+    const agent = raw.location?.agent || skill.agent || '';
+
+    if (OFFICIAL_ORGS.test(sourceUrl)) return 'official';
+    if (rootType === 'agent_global') return 'plugin';
+    if (rootType === 'project_local') return 'standalone';
+    if (GITHUB_URL.test(sourceUrl)) return 'thirdParty';
+    return 'unknown';
+  }
+
+  // Build scan overview data
+  const skills = (data.skills || []).map(s => {
+    const raw = typeof s.raw_json === 'string' ? JSON.parse(s.raw_json) : (s.raw_json || {});
+    return {
+      name: s.name || raw.name || s.slug || '-',
+      slug: s.slug || raw.slug || '-',
+      path: s.local_path || raw.location?.path || '',
+      root: raw.location?.root || '',
+      rootType: raw.location?.rootType || s.root_type || '',
+      agent: raw.location?.agent || s.agent || '',
+      sourceUrl: raw.source?.url || s.source_url || '',
+      description: s.description || raw.description || '',
+      classification: classifySkill(s),
+    };
+  });
+
+  // Group skills by classification
+  const classOrder = ['official', 'plugin', 'standalone', 'thirdParty', 'unknown'];
+  const skillsByClass = {};
+  for (const cls of classOrder) skillsByClass[cls] = [];
+  for (const skill of skills) skillsByClass[skill.classification].push(skill);
+
+  // Unique scanned roots
+  const scannedRoots = [...new Set(skills.map(s => s.root).filter(Boolean))];
+
+  // Build scan overview HTML
+  const classColors = { official: '#10b981', plugin: '#8b5cf6', standalone: '#3b82f6', thirdParty: '#f59e0b', unknown: '#6b7280' };
+  const classCounts = classOrder.map(cls => {
+    const count = skillsByClass[cls].length;
+    return count > 0 ? `<span class="legend-item"><span class="dot" style="background:${classColors[cls]}"></span>${D(`html.${cls}`)} (${count})</span>` : '';
+  }).filter(Boolean).join(' ');
+
+  const skillRows = skills.length === 0
+    ? `<p>${D('html.noSkills')}</p>`
+    : `<table class="skill-table"><thead><tr><th>${D('report.type')}</th><th>${D('html.source')}</th><th>${D('html.agent')}</th><th>${D('html.path')}</th></tr></thead><tbody>` +
+      classOrder.flatMap(cls => skillsByClass[cls].map(s =>
+        `<tr><td><span class="badge" style="background:${classColors[cls]};font-size:0.65rem;padding:0.1rem 0.4rem">${D(`html.${cls}`)}</span></td><td>${escapeHtml(s.sourceUrl || '-')}</td><td>${escapeHtml(s.agent || '-')}</td><td><code>${escapeHtml(s.path)}</code></td></tr>`
+      )).join('') +
+      '</tbody></table>';
+
+  const scanOverviewHtml = `
+    <div class="scan-roots"><strong>${D('html.scannedDirs')}:</strong> ${scannedRoots.map(r => `<code>${escapeHtml(r)}</code>`).join(', ') || '-'}</div>
+    <div class="scan-class-legend">${classCounts}</div>
+    <details class="info-card"><summary>${D('html.skillList')} (${skills.length})</summary><div class="info-body">${skillRows}</div></details>
+  `;
+
+  // Summary cards with collapsible details and tooltips
+  const cardDefs = [
+    { key: 'report.totalSkills', descKey: 'dashboard.totalSkills.desc', value: data.summary.totalSkills, color: '#3b82f6', tooltipTitle: null, tooltipText: null, filterFn: null },
+    { key: 'report.totalFindings', descKey: 'dashboard.totalFindings.desc', value: data.summary.totalFindings, color: '#8b5cf6', tooltipTitle: null, tooltipText: null, filterFn: null },
+    { key: 'report.duplicateGroups', descKey: 'dashboard.duplicateGroups.desc', value: data.summary.duplicateGroups, color: '#6366f1', tooltipTitle: 'tooltip.duplicate.title', tooltipText: 'tooltip.duplicate.text', filterFn: null },
+    { key: 'report.riskFindings', descKey: 'dashboard.riskFindings.desc', value: data.summary.riskFindings, color: '#ef4444', tooltipTitle: 'tooltip.risk.title', tooltipText: 'tooltip.risk.text', filterFn: f => f.type === 'risk' },
+    { key: 'report.zombieCandidates', descKey: 'dashboard.zombieCandidates.desc', value: data.summary.zombieCandidates, color: '#f59e0b', tooltipTitle: 'tooltip.zombie.title', tooltipText: 'tooltip.zombie.text', filterFn: f => f.type === 'zombie' },
+    { key: 'report.conflictFindings', descKey: 'dashboard.conflictFindings.desc', value: data.summary.conflictFindings, color: '#10b981', tooltipTitle: 'tooltip.conflict.title', tooltipText: 'tooltip.conflict.text', filterFn: f => f.type === 'conflict' },
   ];
-  const summaryCards = cardKeys.map(c => `<div class="stat-card" style="border-left:4px solid ${c.color}"><div class="stat-value">${c.value}</div><div class="stat-label">${D(c.key)}</div></div>`).join('\n');
+
+  const summaryCards = cardDefs.map(c => {
+    const tip = c.tooltipTitle ? tooltip(c.tooltipTitle, c.tooltipText) : '';
+    // Build collapsible detail list for this card type
+    let detailSection = '';
+    if (c.filterFn) {
+      const items = data.findings.filter(c.filterFn);
+      if (items.length > 0) {
+        const rows = items.map(f => {
+          const skills = (f.skills || []).map(s => escapeHtml(s.slug)).join(', ');
+          return `<div class="card-item"><span class="badge badge-${f.severity}" style="font-size:0.6rem;padding:0.1rem 0.35rem">${D(`severity.${f.severity}`)}</span> ${translateTitle(f.title)} <span class="card-item-skills">${skills ? `[${skills}]` : ''}</span></div>`;
+        }).join('');
+        detailSection = `<details class="card-details"><summary>${D('html.expandDetails')}</summary><div class="card-detail-list">${rows}</div></details>`;
+      }
+    } else if (c.key === 'report.zombieCandidates') {
+      detailSection = `<div class="card-detail"><strong>${D('tooltip.zombie.formula')}</strong><br><code>${Dn('tooltip.zombie.formulaText')}</code></div>`;
+    }
+    const cardContent = `<div class="stat-value">${c.value}</div><div class="stat-label">${D(c.key)} ${tip}</div><div class="stat-desc">${Dn(c.descKey)}</div>${detailSection}`;
+    return `<div class="stat-card" style="border-left:4px solid ${c.color}">${cardContent}</div>`;
+  }).join('\n');
 
   // Severity bar
   const severityBar = ['critical', 'high', 'medium', 'low', 'info'].map(sev => {
@@ -683,7 +781,155 @@ function renderHtml(data, lang) {
     return `<span class="legend-item"><span class="dot" style="background:${severityColors[sev]}"></span>${D(`severity.${sev}`)} (${count})</span>`;
   }).join(' ');
 
-  // Findings
+  // Per-finding remediation (grouped by type + skill to avoid duplicates)
+  const reportPathForPrompt = reportPath ? reportPath.replace(/\\/g, '/') : '';
+  const pathHintEn = reportPathForPrompt ? ` The diagnostic report is at: ${reportPathForPrompt}` : '';
+  const pathHintZh = reportPathForPrompt ? ` 诊断报告路径：${reportPathForPrompt}` : '';
+
+  // Group findings by type, then by skill slug to deduplicate
+  const findingsByType = {};
+  for (const f of data.findings) {
+    if (!findingsByType[f.type]) findingsByType[f.type] = {};
+    const skillSlugs = (f.skills || []).map(s => s.slug);
+    if (skillSlugs.length === 0) skillSlugs.push('<unknown>');
+    for (const slug of skillSlugs) {
+      if (!findingsByType[f.type][slug]) findingsByType[f.type][slug] = [];
+      findingsByType[f.type][slug].push(f);
+    }
+  }
+
+  const perFindingHtml = data.findings.length === 0
+    ? `<p>${D('fix.noRisks')}</p>`
+    : Object.entries(findingsByType).map(([type, skillMap]) => {
+        const allFindings = Object.values(skillMap).flat();
+        const count = allFindings.length;
+        // Build skill listing with their findings
+        const skillRows = Object.entries(skillMap).map(([slug, findings]) => {
+          const findingItems = findings.map(f =>
+            `<li><span class="badge badge-${f.severity}" style="font-size:0.6rem;padding:0.1rem 0.35rem">${D(`severity.${f.severity}`)}</span> ${translateTitle(f.title)} — ${escapeHtml(f.description || '')}${f.recommendation ? ` <em>(${escapeHtml(f.recommendation)})</em>` : ''} <small>[ID: ${escapeHtml(f.id)}]</small></li>`
+          ).join('');
+          return `<div class="card-item"><strong>${escapeHtml(slug)}</strong><ul style="margin:0.25rem 0 0.5rem 1.5rem">${findingItems}</ul></div>`;
+        }).join('');
+
+        // Agent prompt for this type+skill group (all findings of this type)
+        const agentLines = Object.entries(skillMap).map(([slug, findings]) => {
+          const detailLines = findings.map(f =>
+            `  - [${f.severity}] ${f.title}: ${f.description || ''}${f.recommendation ? ` | 建议: ${f.recommendation}` : ''} (ID: ${f.id})`
+          ).join('\n');
+          return `技能: ${slug}\n${detailLines}`;
+        }).join('\n\n');
+        const agentLinesEn = Object.entries(skillMap).map(([slug, findings]) => {
+          const detailLines = findings.map(f =>
+            `  - [${f.severity}] ${f.title}: ${f.description || ''}${f.recommendation ? ` | Recommendation: ${f.recommendation}` : ''} (ID: ${f.id})`
+          ).join('\n');
+          return `Skill: ${slug}\n${detailLines}`;
+        }).join('\n\n');
+        const agentPromptEn = `Please fix all ${type} issues:${pathHintEn}\n\n${agentLinesEn}`;
+        const agentPromptZh = `请修复以下 ${type} 类型的所有问题：${pathHintZh}\n\n${agentLines}`;
+
+        return `
+    <details class="finding-card">
+      <summary>
+        <span class="tag">${D(`type.${type}`)}</span>
+        <span class="finding-title">${D(`guide.${type}.title`)}</span>
+        <span class="tag">${count}</span>
+      </summary>
+      <div class="finding-body">
+        ${skillRows}
+        <div class="fix-versions">
+          <div class="fix-ver">
+            <h4>${D('fix.humanVersion')}</h4>
+            <pre class="steps">${D(`guide.${type}.steps`)}</pre>
+          </div>
+          <div class="fix-ver">
+            <h4>${D('fix.agentVersion')}</h4>
+            <div class="prompt-block">
+              <pre class="prompt"><span data-lang="en">${escapeHtml(agentPromptEn)}</span><span data-lang="zh">${escapeHtml(agentPromptZh)}</span></pre>
+              <button class="copy-btn" onclick="copyPrompt(this)">${D('fix.copyAgentPrompt')}</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </details>`;
+      }).join('\n');
+
+  // By-type remediation guide (complete version with all findings aggregated)
+  const presentTypes = [...new Set(data.findings.map(f => f.type))];
+  const guideTypes = presentTypes.length > 0 ? presentTypes : ['risk', 'zombie', 'duplicate', 'conflict', 'version_drift', 'description_quality', 'scan_warning'];
+  const guideHtml = guideTypes.map(type => {
+    const typeFindings = data.findings.filter(f => f.type === type);
+    const count = typeFindings.length;
+
+    // Build complete skill-finding listing for this type
+    const skillMapForType = {};
+    for (const f of typeFindings) {
+      const slugs = (f.skills || []).map(s => s.slug);
+      if (slugs.length === 0) slugs.push('<unknown>');
+      for (const slug of slugs) {
+        if (!skillMapForType[slug]) skillMapForType[slug] = [];
+        skillMapForType[slug].push(f);
+      }
+    }
+    const skillDetailHtml = Object.entries(skillMapForType).map(([slug, findings]) => {
+      const items = findings.map(f =>
+        `<li><span class="badge badge-${f.severity}" style="font-size:0.6rem;padding:0.1rem 0.35rem">${D(`severity.${f.severity}`)}</span> ${translateTitle(f.title)} <small>[ID: ${escapeHtml(f.id)}]</small></li>`
+      ).join('');
+      return `<div class="card-item"><strong>${escapeHtml(slug)}</strong><ul style="margin:0.25rem 0 0.5rem 1.5rem">${items}</ul></div>`;
+    }).join('');
+
+    // Complete agent prompt with all findings and report path
+    const agentLinesEn = Object.entries(skillMapForType).map(([slug, findings]) => {
+      const detailLines = findings.map(f =>
+        `  - [${f.severity}] ${f.title}: ${f.description || ''}${f.recommendation ? ` | Recommendation: ${f.recommendation}` : ''} (ID: ${f.id})`
+      ).join('\n');
+      return `Skill: ${slug}\n${detailLines}`;
+    }).join('\n\n');
+    const agentLinesZh = Object.entries(skillMapForType).map(([slug, findings]) => {
+      const detailLines = findings.map(f =>
+        `  - [${f.severity}] ${f.title}: ${f.description || ''}${f.recommendation ? ` | 建议: ${f.recommendation}` : ''} (ID: ${f.id})`
+      ).join('\n');
+      return `技能: ${slug}\n${detailLines}`;
+    }).join('\n\n');
+    const fullAgentPromptEn = `Please fix all ${type} issues:${pathHintEn}\n\n${agentLinesEn}`;
+    const fullAgentPromptZh = `请修复以下 ${type} 类型的所有问题：${pathHintZh}\n\n${agentLinesZh}`;
+
+    return `
+    <details class="guide-card">
+      <summary>${D(`guide.${type}.title`)} <span class="tag">${count}</span></summary>
+      <div class="guide-body">
+        <div class="guide-section">
+          <h4>${D('guide.heading.definition')}</h4>
+          <p>${Dn(`guide.${type}.definition`)}</p>
+        </div>
+        <div class="guide-section">
+          <h4>${D('guide.heading.causes')}</h4>
+          <pre class="cause">${D(`guide.${type}.cause`)}</pre>
+        </div>
+        <div class="guide-section">
+          <h4>${D('guide.heading.severity')}</h4>
+          <p>${Dn(`guide.${type}.severity`)}</p>
+        </div>
+        ${count > 0 ? `<div class="guide-section"><h4>${D('html.skillsInvolved')} (${count})</h4>${skillDetailHtml}</div>` : ''}
+        <div class="guide-section">
+          <h4>${D('guide.heading.humanSteps')}</h4>
+          <pre class="steps">${D(`guide.${type}.steps`)}</pre>
+        </div>
+        <div class="guide-section">
+          <h4>${D('guide.heading.agentOps')}</h4>
+          <div class="prompt-block">
+            <pre class="prompt"><span data-lang="en">${escapeHtml(fullAgentPromptEn)}</span><span data-lang="zh">${escapeHtml(fullAgentPromptZh)}</span></pre>
+            <button class="copy-btn" onclick="copyPrompt(this)">${D('fix.copyAgentPrompt')}</button>
+          </div>
+        </div>
+        <div class="guide-section">
+          <h4>${D('guide.heading.agentExample')}</h4>
+          <pre class="example">${D(`guide.${type}.agentExample`)}</pre>
+        </div>
+      </div>
+    </details>`;
+  }).join('\n');
+
+  // Findings (risk list)
   const findingsHtml = data.findings.map(f => {
     const skillsList = (f.skills || []).map(s => `<code>${escapeHtml(s.slug)}</code>`).join(', ');
     const evidenceList = (f.evidence || []).map(e => `<li>${escapeHtml(e.file || '')}${e.lineStart ? `:${e.lineStart}` : ''} — <code>${escapeHtml(e.text || e.anchor || '')}</code></li>`).join('');
@@ -691,13 +937,13 @@ function renderHtml(data, lang) {
     <details class="finding-card">
       <summary>
         <span class="badge badge-${f.severity}">${D(`severity.${f.severity}`)}</span>
-        <span class="finding-title">${escapeHtml(f.title)}</span>
+        <span class="finding-title">${translateTitle(f.title)}</span>
         <span class="tag">${D(`type.${f.type}`)}</span>
         ${f.ignored ? `<span class="tag tag-ignored">${D('html.ignored')}</span>` : ''}
       </summary>
       <div class="finding-body">
         <p>${escapeHtml(f.description)}</p>
-        ${evidenceList ? `<details><summary>Evidence</summary><ul>${evidenceList}</ul></details>` : ''}
+        ${evidenceList ? `<details><summary>${D('report.evidence')}</summary><ul>${evidenceList}</ul></details>` : ''}
         ${f.recommendation ? `<p><strong>${D('report.recommendation')}:</strong> ${escapeHtml(f.recommendation)}</p>` : ''}
         ${skillsList ? `<p><strong>${D('html.skillsInvolved')}:</strong> ${skillsList}</p>` : ''}
         <p class="finding-id"><small>ID: <code>${escapeHtml(f.id)}</code></small></p>
@@ -709,47 +955,6 @@ function renderHtml(data, lang) {
   const dupesHtml = data.duplicateGroups.length === 0
     ? `<p>${D('report.noDuplicateGroups')}</p>`
     : `<table class="dupe-table"><thead><tr><th>ID</th><th>Strategy</th><th>Confidence</th></tr></thead><tbody>${data.duplicateGroups.map(g => `<tr><td><code>${escapeHtml(g.id)}</code></td><td>${escapeHtml(g.strategy)}</td><td>${escapeHtml(String(g.confidence))}</td></tr>`).join('')}</tbody></table>`;
-
-  // Remediation guide
-  const presentTypes = [...new Set(data.findings.map(f => f.type))];
-  const guideTypes = presentTypes.length > 0 ? presentTypes : ['risk', 'zombie', 'duplicate', 'conflict', 'version_drift', 'description_quality', 'scan_warning'];
-  const guideHtml = guideTypes.map(type => {
-    const exampleSkill = data.findings.find(f => f.type === type)?.skills?.[0]?.slug || '<skill>';
-    const count = data.findings.filter(f => f.type === type).length;
-    return `
-    <details class="guide-card">
-      <summary>${D(`guide.${type}.title`)} <span class="tag">${count}</span></summary>
-      <div class="guide-body">
-        <div class="guide-section">
-          <h4><span data-lang="en">Definition</span><span data-lang="zh">定义</span></h4>
-          <p>${Dn(`guide.${type}.definition`)}</p>
-        </div>
-        <div class="guide-section">
-          <h4><span data-lang="en">Common Causes</span><span data-lang="zh">常见成因</span></h4>
-          <pre class="cause">${D(`guide.${type}.cause`)}</pre>
-        </div>
-        <div class="guide-section">
-          <h4><span data-lang="en">Severity</span><span data-lang="zh">严重程度</span></h4>
-          <p>${Dn(`guide.${type}.severity`)}</p>
-        </div>
-        <div class="guide-section">
-          <h4><span data-lang="en">Fix Steps</span><span data-lang="zh">修复步骤</span></h4>
-          <pre class="steps">${D(`guide.${type}.steps`)}</pre>
-        </div>
-        <div class="guide-section">
-          <h4><span data-lang="en">Example Agent Prompt</span><span data-lang="zh">示例 Agent 提示词</span></h4>
-          <div class="prompt-block">
-            <pre class="prompt"><span data-lang="en">${escapeHtml(t(`guide.${type}.prompt`, 'en', exampleSkill))}</span><span data-lang="zh">${escapeHtml(t(`guide.${type}.prompt`, 'zh', exampleSkill))}</span></pre>
-            <button class="copy-btn" onclick="copyPrompt(this)"><span data-lang="en">${escapeHtml(t('html.copyPrompt', 'en'))}</span><span data-lang="zh">${escapeHtml(t('html.copyPrompt', 'zh'))}</span></button>
-          </div>
-        </div>
-        <div class="guide-section">
-          <h4><span data-lang="en">Agent Interaction Example</span><span data-lang="zh">Agent 交互示例</span></h4>
-          <pre class="example">${D(`guide.${type}.agentExample`)}</pre>
-        </div>
-      </div>
-    </details>`;
-  }).join('\n');
 
   return `<!DOCTYPE html>
 <html lang="${lang || 'en'}">
@@ -763,14 +968,18 @@ function renderHtml(data, lang) {
 *{box-sizing:border-box;margin:0}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;padding:1.5rem}
 header{display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;flex-wrap:wrap;gap:0.5rem}h1{font-size:1.5rem}h2{font-size:1.2rem;margin:1.5rem 0 0.75rem;padding-bottom:0.5rem;border-bottom:2px solid var(--border)}
 .lang-btn{padding:0.4rem 1rem;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;font-size:0.85rem;color:var(--text)}
-.dashboard{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0.75rem;margin-bottom:1.5rem}
-.stat-card{background:var(--card);border-radius:8px;padding:1rem;box-shadow:0 1px 3px rgba(0,0,0,0.08)}.stat-value{font-size:1.75rem;font-weight:700}.stat-label{font-size:0.8rem;color:var(--muted);margin-top:0.25rem}
+.dashboard{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:0.75rem;margin-bottom:1.5rem}
+.stat-card{background:var(--card);border-radius:8px;padding:1rem;box-shadow:0 1px 3px rgba(0,0,0,0.08)}.stat-value{font-size:1.75rem;font-weight:700}.stat-label{font-size:0.8rem;color:var(--muted);margin-top:0.25rem;display:flex;align-items:center;gap:0.3rem}.stat-desc{font-size:0.7rem;color:var(--muted);margin-top:0.35rem;line-height:1.4}
+.card-detail{margin-top:0.5rem;padding-top:0.5rem;border-top:1px solid var(--border);font-size:0.75rem;color:var(--muted)}.card-detail code{font-size:0.7rem;white-space:pre-wrap}
+.card-details{margin-top:0.5rem}.card-details summary{font-size:0.7rem;color:var(--muted);cursor:pointer;padding:0.2rem 0;display:flex}.card-details summary:hover{color:var(--text)}
+.card-detail-list{max-height:200px;overflow-y:auto;padding:0.25rem 0}.card-item{font-size:0.75rem;padding:0.2rem 0;display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap}.card-item-skills{color:var(--muted);font-size:0.7rem}
 .severity-bar{display:flex;height:10px;border-radius:5px;overflow:hidden;background:var(--border);margin:0.75rem 0}.bar-seg{height:100%}.bar-critical{background:var(--c-critical)}.bar-high{background:var(--c-high)}.bar-medium{background:var(--c-medium)}.bar-low{background:var(--c-low)}.bar-info{background:var(--c-info)}
 .legend{display:flex;flex-wrap:wrap;gap:0.75rem;font-size:0.8rem;color:var(--muted);margin-bottom:1rem}.legend-item{display:flex;align-items:center;gap:0.3rem}.dot{width:10px;height:10px;border-radius:50%;display:inline-block}
 .finding-card{background:var(--card);border:1px solid var(--border);border-radius:8px;margin-bottom:0.5rem;overflow:hidden}summary{padding:0.75rem 1rem;cursor:pointer;display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap}summary:hover{background:rgba(0,0,0,0.02)}
 .badge{font-size:0.7rem;padding:0.15rem 0.5rem;border-radius:4px;color:#fff;font-weight:600;text-transform:uppercase}.badge-critical{background:var(--c-critical)}.badge-high{background:var(--c-high)}.badge-medium{background:var(--c-medium)}.badge-low{background:var(--c-low)}.badge-info{background:var(--c-info)}
 .finding-title{font-weight:600;flex:1}.tag{font-size:0.7rem;padding:0.1rem 0.4rem;border-radius:3px;background:var(--border);color:var(--muted)}.tag-ignored{background:#fef3c7;color:#92400e}
 .finding-body{padding:0.75rem 1rem;border-top:1px solid var(--border);font-size:0.9rem}.finding-body p{margin:0.5rem 0}.finding-body ul{margin:0.5rem 0 0.5rem 1.5rem}.finding-id{color:var(--muted);margin-top:0.5rem}
+.fix-versions{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:0.75rem}.fix-ver h4{font-size:0.8rem;color:var(--muted);margin-bottom:0.5rem;text-transform:uppercase}
 .dupe-table{width:100%;border-collapse:collapse;font-size:0.85rem;margin-top:0.5rem}th,td{padding:0.5rem 0.75rem;border:1px solid var(--border);text-align:left}th{background:var(--card);font-weight:600}
 .guide-card{background:var(--card);border:1px solid var(--border);border-radius:8px;margin-bottom:0.5rem}summary{font-weight:600}.guide-body{padding:0.75rem 1rem;border-top:1px solid var(--border);font-size:0.9rem}
 .steps{background:var(--bg);padding:0.75rem;border-radius:6px;white-space:pre-wrap;font-size:0.85rem;margin:0.5rem 0}
@@ -780,9 +989,13 @@ header{display:flex;justify-content:space-between;align-items:center;margin-bott
 .guide-section{margin:0.75rem 0}.guide-section h4{font-size:0.85rem;color:var(--muted);margin-bottom:0.5rem;text-transform:uppercase;letter-spacing:0.5px}
 .cause{background:var(--bg);padding:0.75rem;border-radius:6px;white-space:pre-wrap;font-size:0.85rem;margin:0.5rem 0;border-left:3px solid var(--c-medium)}
 .example{background:var(--bg);padding:0.75rem;border-radius:6px;white-space:pre-wrap;font-size:0.85rem;margin:0.5rem 0;border-left:3px solid var(--c-low)}
+.tip-wrap{position:relative;display:inline-flex;align-items:center}.tip-icon{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:var(--border);color:var(--muted);font-size:0.65rem;font-weight:700;cursor:help;margin-left:0.25rem}
+.tip-box{display:none;position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:0.75rem;font-size:0.8rem;width:320px;z-index:10;box-shadow:0 4px 12px rgba(0,0,0,0.12);line-height:1.5;white-space:normal}
+.tip-wrap:hover .tip-box{display:block}
+.scan-roots{margin-bottom:0.75rem;font-size:0.85rem}.scan-roots code{background:var(--border);padding:0.1rem 0.4rem;border-radius:3px;font-size:0.8rem}
+.scan-class-legend{display:flex;flex-wrap:wrap;gap:0.75rem;font-size:0.8rem;color:var(--muted);margin-bottom:0.75rem}
+.skill-table{width:100%;border-collapse:collapse;font-size:0.8rem;margin-top:0.5rem}th,td{padding:0.4rem 0.6rem;border:1px solid var(--border);text-align:left}th{background:var(--card);font-weight:600;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.3px}.skill-table code{font-size:0.75rem;word-break:break-all}
 footer{text-align:center;color:var(--muted);font-size:0.8rem;margin-top:2rem;padding-top:1rem;border-top:1px solid var(--border)}
-[data-lang="en"]{display:${lang === 'en' ? '' : 'none'}}
-[data-lang="zh"]{display:${lang === 'zh' ? '' : 'none'}}
 </style>
 </head>
 <body>
@@ -790,6 +1003,9 @@ footer{text-align:center;color:var(--muted);font-size:0.8rem;margin-top:2rem;pad
   <h1>${D('report.title')}</h1>
   <button class="lang-btn" onclick="toggleLang()"><span data-lang="en">中文</span><span data-lang="zh">EN</span></button>
 </header>
+
+<h2>${D('html.scanOverview')}</h2>
+${scanOverviewHtml}
 
 <h2>${D('html.dashboard')}</h2>
 <div class="dashboard">${summaryCards}</div>
@@ -807,21 +1023,28 @@ footer{text-align:center;color:var(--muted);font-size:0.8rem;margin-top:2rem;pad
   </div>
 </details>
 
-<h2>${D('report.findings')}</h2>
-${findingsHtml || `<p>${D('report.noFindings')}</p>`}
+<h2>${D('html.remediationGuide')}</h2>
+<h3 style="font-size:1rem;margin:1rem 0 0.5rem;color:var(--muted)">${D('fix.byType')}</h3>
+${guideHtml}
+
+<h3 style="font-size:1rem;margin:1.5rem 0 0.5rem;color:var(--muted)">${D('fix.perFinding')}</h3>
+${perFindingHtml}
 
 <h2>${D('report.duplicateGroupsSection')}</h2>
 ${dupesHtml}
-
-<h2>${D('html.remediationGuide')}</h2>
-${guideHtml}
 
 <footer>${D('html.generatedAt')}: ${new Date().toISOString()}</footer>
 
 <script>
 function setLang(lang){
   document.documentElement.lang=lang;
-  document.querySelectorAll('[data-lang]').forEach(function(e){e.style.display=e.dataset.lang===lang?'':'none'});
+  document.querySelectorAll('[data-lang]').forEach(function(e){
+    if(e.dataset.lang===lang){
+      e.style.removeProperty('display');
+    }else{
+      e.style.display='none';
+    }
+  });
   localStorage.setItem('asd-lang',lang);
 }
 function toggleLang(){
@@ -848,7 +1071,8 @@ function copyPrompt(btn){
 (function(){
   var initial='${(lang === 'zh' ? 'zh' : 'en')}';
   var saved=localStorage.getItem('asd-lang');
-  if(saved&&saved!==initial){setLang(saved);}
+  var active=saved||initial;
+  setLang(active);
 })();
 </script>
 </body>
@@ -857,18 +1081,16 @@ function copyPrompt(btn){
 
 function writeReport(db, { format, output, includeIgnored, reportsDir, lang }) {
   const data = buildReportData(db, includeIgnored);
-  let content, ext;
+  const ext = format === 'json' ? 'json' : format === 'html' ? 'html' : 'md';
+  const outPath = output || path.join(reportsDir, `skill-doctor-report-${Date.now()}.${ext}`);
+  let content;
   if (format === 'json') {
     content = JSON.stringify(data, null, 2);
-    ext = 'json';
   } else if (format === 'html') {
-    content = renderHtml(data, lang);
-    ext = 'html';
+    content = renderHtml(data, lang, outPath);
   } else {
     content = renderMarkdown(data, lang);
-    ext = 'md';
   }
-  const outPath = output || path.join(reportsDir, `skill-doctor-report-${Date.now()}.${ext}`);
   ensureDir(path.dirname(outPath));
   fs.writeFileSync(outPath, content, 'utf8');
   const reportId = sha256(`${outPath}:${nowIso()}`);
