@@ -257,6 +257,8 @@ CREATE TABLE IF NOT EXISTS duplicate_group_members (
 CREATE INDEX IF NOT EXISTS idx_duplicate_group_members_skill_id ON duplicate_group_members(skill_id);
 CREATE INDEX IF NOT EXISTS idx_duplicate_group_members_added_at ON duplicate_group_members(added_at);
 `);
+  // Migration: add score column to findings if missing
+  try { db.exec('ALTER TABLE findings ADD COLUMN score REAL'); } catch {}
   return db;
 }
 
@@ -520,9 +522,10 @@ function upsertFinding(db, finding, links) {
   const at = nowIso();
   const createdAt = finding.createdAt || at;
   const updatedAt = finding.updatedAt || at;
+  const score = finding.score != null ? finding.score : null;
   const existing = db.prepare('SELECT id FROM findings WHERE id = ?').get(finding.id);
-  if (existing) db.prepare('UPDATE findings SET type=?, severity=?, detector_id=?, rule_id=?, title=?, description=?, signature=?, evidence_json=?, recommendation=?, updated_at=? WHERE id=?').run(finding.type, finding.severity, finding.detectorId, finding.ruleId || null, finding.title, finding.description, finding.signature, JSON.stringify(finding.evidence || []), finding.recommendation || null, updatedAt, finding.id);
-  else db.prepare('INSERT INTO findings (id, type, severity, detector_id, rule_id, title, description, signature, evidence_json, recommendation, ignored, ignored_reason, ignored_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?)').run(finding.id, finding.type, finding.severity, finding.detectorId, finding.ruleId || null, finding.title, finding.description, finding.signature, JSON.stringify(finding.evidence || []), finding.recommendation || null, createdAt, updatedAt);
+  if (existing) db.prepare('UPDATE findings SET type=?, severity=?, detector_id=?, rule_id=?, title=?, description=?, signature=?, evidence_json=?, recommendation=?, score=?, updated_at=? WHERE id=?').run(finding.type, finding.severity, finding.detectorId, finding.ruleId || null, finding.title, finding.description, finding.signature, JSON.stringify(finding.evidence || []), finding.recommendation || null, score, updatedAt, finding.id);
+  else db.prepare('INSERT INTO findings (id, type, severity, detector_id, rule_id, title, description, signature, evidence_json, recommendation, score, ignored, ignored_reason, ignored_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?)').run(finding.id, finding.type, finding.severity, finding.detectorId, finding.ruleId || null, finding.title, finding.description, finding.signature, JSON.stringify(finding.evidence || []), finding.recommendation || null, score, createdAt, updatedAt);
   const stmt = db.prepare('INSERT OR IGNORE INTO finding_skills (finding_id, skill_id, role, added_at) VALUES (?, ?, ?, ?)');
   for (const link of links) stmt.run(link.findingId || finding.id, link.skillId, link.role || 'primary', link.addedAt || at);
 }
@@ -608,7 +611,7 @@ function listDuplicateGroupMembers(db) { return db.prepare('SELECT * FROM duplic
 function buildReportData(db, includeIgnored) {
   const skills = listSkills(db);
   const rows = listFindings(db, includeIgnored);
-  const findings = rows.map(row => ({ id: row.id, type: row.type, severity: row.severity, detectorId: row.detector_id, ruleId: row.rule_id, title: row.title, description: row.description, signature: row.signature, evidence: JSON.parse(row.evidence_json || '[]'), recommendation: row.recommendation, ignored: !!row.ignored, ignoredReason: row.ignored_reason, ignoredAt: row.ignored_at, createdAt: row.created_at, updatedAt: row.updated_at, skills: getFindingSkills(db, row.id) }));
+  const findings = rows.map(row => ({ id: row.id, type: row.type, severity: row.severity, detectorId: row.detector_id, ruleId: row.rule_id, title: row.title, description: row.description, signature: row.signature, evidence: JSON.parse(row.evidence_json || '[]'), recommendation: row.recommendation, score: row.score, ignored: !!row.ignored, ignoredReason: row.ignored_reason, ignoredAt: row.ignored_at, createdAt: row.created_at, updatedAt: row.updated_at, skills: getFindingSkills(db, row.id) }));
   const bySeverity = {}, byType = {};
   for (const f of findings) { bySeverity[f.severity] = (bySeverity[f.severity] || 0) + 1; byType[f.type] = (byType[f.type] || 0) + 1; }
   const duplicateGroups = listDuplicateGroups(db);
