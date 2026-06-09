@@ -450,6 +450,41 @@ function loadSkillLock() {
   return _skillLockCache;
 }
 
+// Load .agents/skill-state-with-plugin-cache.yaml for source tracking
+let _skillStateCache = null;
+function loadSkillState() {
+  if (_skillStateCache !== null) return _skillStateCache;
+  _skillStateCache = {};
+  const statePath = path.join(os.homedir(), '.agents', 'skill-state-with-plugin-cache.yaml');
+  if (!fs.existsSync(statePath)) {
+    // Fallback to skill-state.yaml
+    const alt = path.join(os.homedir(), '.agents', 'skill-state.yaml');
+    if (!fs.existsSync(alt)) return _skillStateCache;
+    try {
+      const lines = fs.readFileSync(alt, 'utf8').split('\n');
+      let cur = '';
+      for (const line of lines) {
+        const sm = line.match(/^  (\S+):$/);
+        if (sm) { cur = sm[1]; _skillStateCache[cur] = {}; }
+        const kv = line.match(/^    (\S+):\s*(.+)/);
+        if (kv && cur) _skillStateCache[cur][kv[1]] = kv[2].replace(/^"|"$/g, '');
+      }
+    } catch {}
+    return _skillStateCache;
+  }
+  try {
+    const lines = fs.readFileSync(statePath, 'utf8').split('\n');
+    let cur = '';
+    for (const line of lines) {
+      const sm = line.match(/^  (\S+):$/);
+      if (sm) { cur = sm[1]; _skillStateCache[cur] = {}; }
+      const kv = line.match(/^    (\S+):\s*(.+)/);
+      if (kv && cur) _skillStateCache[cur][kv[1]] = kv[2].replace(/^"|"$/g, '');
+    }
+  } catch {}
+  return _skillStateCache;
+}
+
 // Load .claude-plugin/marketplace.json or plugin.json from skill directory
 function loadClaudePluginInfo(skillPath) {
   const pluginDir = path.join(skillPath, '.claude-plugin');
@@ -511,6 +546,14 @@ function parseSkillCandidate(candidate) {
         const agentSource = agentSourceMap[agent] || `${agent}/system-skills`;
         skill.source = { type: 'builtin', url: null, subdir: null, ref: null, commit: null };
         skill._sourcePlugin = agentSource;
+      } else {
+        // Fallback: check skill-state-with-plugin-cache.yaml for source info
+        const stateInfo = loadSkillState();
+        const stateEntry = stateInfo[slug] || stateInfo[name];
+        if (stateEntry && stateEntry.source && stateEntry.source !== 'local') {
+          skill.source = { type: 'git', url: stateEntry.sourceUrl || null, subdir: null, ref: null, commit: null };
+          skill._sourcePlugin = stateEntry.source || null;
+        }
       }
     }
   }
@@ -793,10 +836,9 @@ function renderHtml(data, lang, reportPath) {
       if (/anthropics|openai|github|google/i.test(plugin)) return 'official';
       return 'thirdParty';
     }
-    if (rootType === 'agent_global') return 'local';
     if (rootType === 'project_local') return 'standalone';
-    if (GITHUB_URL.test(sourceUrl)) return 'thirdParty';
-    return 'unknown';
+    // No "local" type — everything else is thirdParty
+    return 'thirdParty';
   }
 
   // Build scan overview data
@@ -818,7 +860,7 @@ function renderHtml(data, lang, reportPath) {
   });
 
   // Group skills by classification
-  const classOrder = ['official', 'plugin', 'local', 'standalone', 'thirdParty', 'unknown'];
+  const classOrder = ['official', 'plugin', 'standalone', 'thirdParty', 'unknown'];
   const skillsByClass = {};
   for (const cls of classOrder) skillsByClass[cls] = [];
   for (const skill of skills) skillsByClass[skill.classification].push(skill);
@@ -832,7 +874,7 @@ function renderHtml(data, lang, reportPath) {
   }
 
   // Build scan overview HTML
-  const classColors = { official: '#10b981', plugin: '#8b5cf6', local: '#0ea5e9', standalone: '#3b82f6', thirdParty: '#f59e0b', unknown: '#6b7280' };
+  const classColors = { official: '#10b981', plugin: '#8b5cf6', standalone: '#3b82f6', thirdParty: '#f59e0b', unknown: '#6b7280' };
   const rootTypeLabel = (rt) => {
     if (rt === 'central_library') return D('html.rootType.central');
     if (rt === 'agent_global') return D('html.rootType.global');
