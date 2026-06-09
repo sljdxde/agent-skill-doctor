@@ -11,6 +11,7 @@ const { detectConflicts } = require('../src/doctor/conflict');
 const { detectZombies } = require('../src/doctor/zombie');
 const { DEFAULT_CONFLICT_RULES } = require('../src/doctor/rules');
 const phase2 = require('../src/doctor/phase2');
+const { t, dictionaries } = require('../src/doctor/i18n');
 
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'target', 'dist', 'build', '.cache', '.DS_Store']);
 
@@ -35,6 +36,15 @@ function normalizePath(p) {
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function nl2br(str) {
+  return escapeHtml(str).replace(/\n/g, '<br>');
 }
 
 function parseArgs(argv) {
@@ -555,7 +565,7 @@ function recordRun(db, run) {
 }
 
 function listSkills(db) { return db.prepare('SELECT * FROM skill_records ORDER BY slug ASC').all(); }
-function listFindings(db, includeIgnored) { return db.prepare(`SELECT * FROM findings ${includeIgnored ? '' : 'WHERE ignored = 0'} ORDER BY severity DESC, type ASC, title ASC`).all(); }
+function listFindings(db, includeIgnored) { return db.prepare(`SELECT * FROM findings ${includeIgnored ? '' : 'WHERE ignored = 0'} ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 WHEN 'info' THEN 4 ELSE 5 END, type ASC, title ASC`).all(); }
 function listIgnored(db) { return db.prepare('SELECT * FROM findings WHERE ignored = 1 ORDER BY ignored_at DESC').all(); }
 function getFindingSkills(db, findingId) { return db.prepare('SELECT fs.*, sr.slug, sr.name, sr.local_path FROM finding_skills fs JOIN skill_records sr ON sr.id = fs.skill_id WHERE fs.finding_id = ? ORDER BY fs.role ASC, sr.slug ASC').all(findingId); }
 function setIgnored(db, id, ignored, reason, at) { return db.prepare('UPDATE findings SET ignored=?, ignored_reason=?, ignored_at=?, updated_at=? WHERE id=?').run(ignored ? 1 : 0, ignored ? (reason || null) : null, ignored ? at : null, at, id).changes || 0; }
@@ -587,51 +597,277 @@ function buildReportData(db, includeIgnored) {
   return { summary, skills, findings, findingSkills, duplicateGroups, duplicateGroupMembers, optimizationPlan: {} };
 }
 
-function renderMarkdown(data) {
+function renderMarkdown(data, lang) {
+  const L = (key, ...args) => t(key, lang || 'en', ...args);
   const lines = [
-    '# Agent Skill Doctor Report',
+    `# ${L('report.title')}`,
     '',
-    '## Summary',
+    `## ${L('report.summary')}`,
     '',
-    `- Total skills: ${data.summary.totalSkills}`,
-    `- Total findings: ${data.summary.totalFindings}`,
-    `- Duplicate groups: ${data.summary.duplicateGroups}`,
-    `- Version drift findings: ${data.summary.versionDriftFindings}`,
-    `- Conflict findings: ${data.summary.conflictFindings}`,
-    `- Risk findings: ${data.summary.riskFindings}`,
-    `- Zombie candidates: ${data.summary.zombieCandidates}`,
-    `- Ignored findings: ${data.summary.ignoredFindings}`,
-    `- By severity: ${JSON.stringify(data.summary.bySeverity)}`,
-    `- By type: ${JSON.stringify(data.summary.byType)}`,
+    `- ${L('report.totalSkills')}: ${data.summary.totalSkills}`,
+    `- ${L('report.totalFindings')}: ${data.summary.totalFindings}`,
+    `- ${L('report.duplicateGroups')}: ${data.summary.duplicateGroups}`,
+    `- ${L('report.versionDriftFindings')}: ${data.summary.versionDriftFindings}`,
+    `- ${L('report.conflictFindings')}: ${data.summary.conflictFindings}`,
+    `- ${L('report.riskFindings')}: ${data.summary.riskFindings}`,
+    `- ${L('report.zombieCandidates')}: ${data.summary.zombieCandidates}`,
+    `- ${L('report.ignoredFindings')}: ${data.summary.ignoredFindings}`,
+    `- ${L('report.bySeverity')}: ${JSON.stringify(data.summary.bySeverity)}`,
+    `- ${L('report.byType')}: ${JSON.stringify(data.summary.byType)}`,
     '',
-    '## Critical Risks',
+    `## ${L('report.criticalRisks')}`,
     '',
   ];
   const criticalRisks = data.findings.filter(f => f.type === 'risk' && f.severity === 'critical');
-  if (!criticalRisks.length) lines.push('No critical risks.', '');
+  if (!criticalRisks.length) lines.push(L('report.noCriticalRisks'), '');
   for (const f of criticalRisks) lines.push(`- \`${f.id}\` ${f.title}`, '');
-  lines.push('## Duplicate Groups', '');
-  if (!data.duplicateGroups.length) lines.push('No duplicate groups.', '');
+  lines.push(`## ${L('report.duplicateGroupsSection')}`, '');
+  if (!data.duplicateGroups.length) lines.push(L('report.noDuplicateGroups'), '');
   for (const group of data.duplicateGroups) lines.push(`- \`${group.id}\` ${group.strategy} confidence=${group.confidence}`);
-  lines.push('', '## Findings', '');
-  if (!data.findings.length) lines.push('No findings.', '');
+  lines.push('', `## ${L('report.findings')}`, '');
+  if (!data.findings.length) lines.push(L('report.noFindings'), '');
   for (const f of data.findings) {
-    lines.push(`### ${f.severity.toUpperCase()} - ${f.title}`, '', `- ID: \`${f.id}\``, `- Type: \`${f.type}\``, `- Detector: \`${f.detectorId}\``);
-    if (f.ignored) lines.push(`- Ignored: yes (${f.ignoredReason || 'no reason'})`);
+    lines.push(`### ${t(`severity.${f.severity}`, lang)} - ${f.title}`, '', `- ${L('report.id')}: \`${f.id}\``, `- ${L('report.type')}: \`${f.type}\``, `- ${L('report.detector')}: \`${f.detectorId}\``);
+    if (f.ignored) lines.push(`- ${L('html.ignored')}: yes (${f.ignoredReason || 'no reason'})`);
     if (f.skills?.length) lines.push(`- Skills: ${f.skills.map(s => `\`${s.slug}\``).join(', ')}`);
     lines.push('', f.description, '');
-    if (f.recommendation) lines.push(`Recommendation: ${f.recommendation}`, '');
+    if (f.recommendation) lines.push(`${L('report.recommendation')}: ${f.recommendation}`, '');
   }
-  lines.push('## Skills', '');
+  lines.push(`## ${L('report.skills')}`, '');
   for (const s of data.skills) lines.push(`- \`${s.slug}\` - ${s.name} - ${s.local_path}`);
   lines.push('');
   return lines.join('\n');
 }
 
-function writeReport(db, { format, output, includeIgnored, reportsDir }) {
+function renderHtml(data, lang) {
+  const severityColors = { critical: '#dc2626', high: '#ea580c', medium: '#ca8a04', low: '#2563eb', info: '#6b7280' };
+  const totalForBar = data.summary.totalFindings || 1;
+
+  // Dual-language helper: renders both en and zh spans
+  const D = (key, ...args) => {
+    const enText = escapeHtml(t(key, 'en', ...args));
+    const zhText = escapeHtml(t(key, 'zh', ...args));
+    if (enText === zhText) return enText;
+    return `<span data-lang="en">${enText}</span><span data-lang="zh">${zhText}</span>`;
+  };
+
+  // Dual-language helper with newline-to-<br> conversion for <p> tags
+  const Dn = (key, ...args) => {
+    const enText = nl2br(t(key, 'en', ...args));
+    const zhText = nl2br(t(key, 'zh', ...args));
+    if (enText === zhText) return enText;
+    return `<span data-lang="en">${enText}</span><span data-lang="zh">${zhText}</span>`;
+  };
+
+  // Summary cards
+  const cardKeys = [
+    { key: 'report.totalSkills', value: data.summary.totalSkills, color: '#3b82f6' },
+    { key: 'report.totalFindings', value: data.summary.totalFindings, color: '#8b5cf6' },
+    { key: 'report.duplicateGroups', value: data.summary.duplicateGroups, color: '#6366f1' },
+    { key: 'report.riskFindings', value: data.summary.riskFindings, color: '#ef4444' },
+    { key: 'report.zombieCandidates', value: data.summary.zombieCandidates, color: '#f59e0b' },
+    { key: 'report.conflictFindings', value: data.summary.conflictFindings, color: '#10b981' },
+  ];
+  const summaryCards = cardKeys.map(c => `<div class="stat-card" style="border-left:4px solid ${c.color}"><div class="stat-value">${c.value}</div><div class="stat-label">${D(c.key)}</div></div>`).join('\n');
+
+  // Severity bar
+  const severityBar = ['critical', 'high', 'medium', 'low', 'info'].map(sev => {
+    const count = data.summary.bySeverity[sev] || 0;
+    const pct = (count / totalForBar * 100).toFixed(1);
+    return count > 0 ? `<div class="bar-seg bar-${sev}" style="width:${pct}%" title="${escapeHtml(t(`severity.${sev}`, 'en'))}/${escapeHtml(t(`severity.${sev}`, 'zh'))}: ${count}"></div>` : '';
+  }).join('');
+
+  // Severity legend
+  const severityLegend = ['critical', 'high', 'medium', 'low', 'info'].map(sev => {
+    const count = data.summary.bySeverity[sev] || 0;
+    return `<span class="legend-item"><span class="dot" style="background:${severityColors[sev]}"></span>${D(`severity.${sev}`)} (${count})</span>`;
+  }).join(' ');
+
+  // Findings
+  const findingsHtml = data.findings.map(f => {
+    const skillsList = (f.skills || []).map(s => `<code>${escapeHtml(s.slug)}</code>`).join(', ');
+    const evidenceList = (f.evidence || []).map(e => `<li>${escapeHtml(e.file || '')}${e.lineStart ? `:${e.lineStart}` : ''} — <code>${escapeHtml(e.text || e.anchor || '')}</code></li>`).join('');
+    return `
+    <details class="finding-card">
+      <summary>
+        <span class="badge badge-${f.severity}">${D(`severity.${f.severity}`)}</span>
+        <span class="finding-title">${escapeHtml(f.title)}</span>
+        <span class="tag">${D(`type.${f.type}`)}</span>
+        ${f.ignored ? `<span class="tag tag-ignored">${D('html.ignored')}</span>` : ''}
+      </summary>
+      <div class="finding-body">
+        <p>${escapeHtml(f.description)}</p>
+        ${evidenceList ? `<details><summary>Evidence</summary><ul>${evidenceList}</ul></details>` : ''}
+        ${f.recommendation ? `<p><strong>${D('report.recommendation')}:</strong> ${escapeHtml(f.recommendation)}</p>` : ''}
+        ${skillsList ? `<p><strong>${D('html.skillsInvolved')}:</strong> ${skillsList}</p>` : ''}
+        <p class="finding-id"><small>ID: <code>${escapeHtml(f.id)}</code></small></p>
+      </div>
+    </details>`;
+  }).join('\n');
+
+  // Duplicate groups
+  const dupesHtml = data.duplicateGroups.length === 0
+    ? `<p>${D('report.noDuplicateGroups')}</p>`
+    : `<table class="dupe-table"><thead><tr><th>ID</th><th>Strategy</th><th>Confidence</th></tr></thead><tbody>${data.duplicateGroups.map(g => `<tr><td><code>${escapeHtml(g.id)}</code></td><td>${escapeHtml(g.strategy)}</td><td>${escapeHtml(String(g.confidence))}</td></tr>`).join('')}</tbody></table>`;
+
+  // Remediation guide
+  const presentTypes = [...new Set(data.findings.map(f => f.type))];
+  const guideTypes = presentTypes.length > 0 ? presentTypes : ['risk', 'zombie', 'duplicate', 'conflict', 'version_drift', 'description_quality', 'scan_warning'];
+  const guideHtml = guideTypes.map(type => {
+    const exampleSkill = data.findings.find(f => f.type === type)?.skills?.[0]?.slug || '<skill>';
+    const count = data.findings.filter(f => f.type === type).length;
+    return `
+    <details class="guide-card">
+      <summary>${D(`guide.${type}.title`)} <span class="tag">${count}</span></summary>
+      <div class="guide-body">
+        <div class="guide-section">
+          <h4><span data-lang="en">Definition</span><span data-lang="zh">定义</span></h4>
+          <p>${Dn(`guide.${type}.definition`)}</p>
+        </div>
+        <div class="guide-section">
+          <h4><span data-lang="en">Common Causes</span><span data-lang="zh">常见成因</span></h4>
+          <pre class="cause">${D(`guide.${type}.cause`)}</pre>
+        </div>
+        <div class="guide-section">
+          <h4><span data-lang="en">Severity</span><span data-lang="zh">严重程度</span></h4>
+          <p>${Dn(`guide.${type}.severity`)}</p>
+        </div>
+        <div class="guide-section">
+          <h4><span data-lang="en">Fix Steps</span><span data-lang="zh">修复步骤</span></h4>
+          <pre class="steps">${D(`guide.${type}.steps`)}</pre>
+        </div>
+        <div class="guide-section">
+          <h4><span data-lang="en">Example Agent Prompt</span><span data-lang="zh">示例 Agent 提示词</span></h4>
+          <div class="prompt-block">
+            <pre class="prompt"><span data-lang="en">${escapeHtml(t(`guide.${type}.prompt`, 'en', exampleSkill))}</span><span data-lang="zh">${escapeHtml(t(`guide.${type}.prompt`, 'zh', exampleSkill))}</span></pre>
+            <button class="copy-btn" onclick="copyPrompt(this)"><span data-lang="en">${escapeHtml(t('html.copyPrompt', 'en'))}</span><span data-lang="zh">${escapeHtml(t('html.copyPrompt', 'zh'))}</span></button>
+          </div>
+        </div>
+        <div class="guide-section">
+          <h4><span data-lang="en">Agent Interaction Example</span><span data-lang="zh">Agent 交互示例</span></h4>
+          <pre class="example">${D(`guide.${type}.agentExample`)}</pre>
+        </div>
+      </div>
+    </details>`;
+  }).join('\n');
+
+  return `<!DOCTYPE html>
+<html lang="${lang || 'en'}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${t('report.title', lang || 'en')}</title>
+<style>
+:root{--c-critical:#dc2626;--c-high:#ea580c;--c-medium:#ca8a04;--c-low:#2563eb;--c-info:#6b7280;--bg:#f8fafc;--card:#fff;--text:#1e293b;--border:#e2e8f0;--muted:#64748b}
+@media(prefers-color-scheme:dark){:root{--bg:#0f172a;--card:#1e293b;--text:#e2e8f0;--border:#334155;--muted:#94a3b8}}
+*{box-sizing:border-box;margin:0}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;padding:1.5rem}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;flex-wrap:wrap;gap:0.5rem}h1{font-size:1.5rem}h2{font-size:1.2rem;margin:1.5rem 0 0.75rem;padding-bottom:0.5rem;border-bottom:2px solid var(--border)}
+.lang-btn{padding:0.4rem 1rem;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;font-size:0.85rem;color:var(--text)}
+.dashboard{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0.75rem;margin-bottom:1.5rem}
+.stat-card{background:var(--card);border-radius:8px;padding:1rem;box-shadow:0 1px 3px rgba(0,0,0,0.08)}.stat-value{font-size:1.75rem;font-weight:700}.stat-label{font-size:0.8rem;color:var(--muted);margin-top:0.25rem}
+.severity-bar{display:flex;height:10px;border-radius:5px;overflow:hidden;background:var(--border);margin:0.75rem 0}.bar-seg{height:100%}.bar-critical{background:var(--c-critical)}.bar-high{background:var(--c-high)}.bar-medium{background:var(--c-medium)}.bar-low{background:var(--c-low)}.bar-info{background:var(--c-info)}
+.legend{display:flex;flex-wrap:wrap;gap:0.75rem;font-size:0.8rem;color:var(--muted);margin-bottom:1rem}.legend-item{display:flex;align-items:center;gap:0.3rem}.dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+.finding-card{background:var(--card);border:1px solid var(--border);border-radius:8px;margin-bottom:0.5rem;overflow:hidden}summary{padding:0.75rem 1rem;cursor:pointer;display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap}summary:hover{background:rgba(0,0,0,0.02)}
+.badge{font-size:0.7rem;padding:0.15rem 0.5rem;border-radius:4px;color:#fff;font-weight:600;text-transform:uppercase}.badge-critical{background:var(--c-critical)}.badge-high{background:var(--c-high)}.badge-medium{background:var(--c-medium)}.badge-low{background:var(--c-low)}.badge-info{background:var(--c-info)}
+.finding-title{font-weight:600;flex:1}.tag{font-size:0.7rem;padding:0.1rem 0.4rem;border-radius:3px;background:var(--border);color:var(--muted)}.tag-ignored{background:#fef3c7;color:#92400e}
+.finding-body{padding:0.75rem 1rem;border-top:1px solid var(--border);font-size:0.9rem}.finding-body p{margin:0.5rem 0}.finding-body ul{margin:0.5rem 0 0.5rem 1.5rem}.finding-id{color:var(--muted);margin-top:0.5rem}
+.dupe-table{width:100%;border-collapse:collapse;font-size:0.85rem;margin-top:0.5rem}th,td{padding:0.5rem 0.75rem;border:1px solid var(--border);text-align:left}th{background:var(--card);font-weight:600}
+.guide-card{background:var(--card);border:1px solid var(--border);border-radius:8px;margin-bottom:0.5rem}summary{font-weight:600}.guide-body{padding:0.75rem 1rem;border-top:1px solid var(--border);font-size:0.9rem}
+.steps{background:var(--bg);padding:0.75rem;border-radius:6px;white-space:pre-wrap;font-size:0.85rem;margin:0.5rem 0}
+.prompt-block{position:relative;margin-top:0.5rem}.prompt{background:#1e293b;color:#e2e8f0;padding:0.75rem;border-radius:6px;font-size:0.8rem;white-space:pre-wrap;overflow-x:auto}
+.copy-btn{position:absolute;top:0.5rem;right:0.5rem;padding:0.25rem 0.6rem;font-size:0.75rem;border:none;border-radius:4px;background:rgba(255,255,255,0.15);color:#e2e8f0;cursor:pointer}.copy-btn:hover{background:rgba(255,255,255,0.25)}
+.info-card{background:var(--card);border:1px solid var(--border);border-radius:8px;margin-bottom:1rem}summary{font-weight:600}.info-body{padding:0.75rem 1rem;border-top:1px solid var(--border);font-size:0.9rem}.info-body p{margin:0.5rem 0;padding-left:1rem;border-left:3px solid var(--border)}
+.guide-section{margin:0.75rem 0}.guide-section h4{font-size:0.85rem;color:var(--muted);margin-bottom:0.5rem;text-transform:uppercase;letter-spacing:0.5px}
+.cause{background:var(--bg);padding:0.75rem;border-radius:6px;white-space:pre-wrap;font-size:0.85rem;margin:0.5rem 0;border-left:3px solid var(--c-medium)}
+.example{background:var(--bg);padding:0.75rem;border-radius:6px;white-space:pre-wrap;font-size:0.85rem;margin:0.5rem 0;border-left:3px solid var(--c-low)}
+footer{text-align:center;color:var(--muted);font-size:0.8rem;margin-top:2rem;padding-top:1rem;border-top:1px solid var(--border)}
+[data-lang="en"]{display:${lang === 'en' ? '' : 'none'}}
+[data-lang="zh"]{display:${lang === 'zh' ? '' : 'none'}}
+</style>
+</head>
+<body>
+<header>
+  <h1>${D('report.title')}</h1>
+  <button class="lang-btn" onclick="toggleLang()"><span data-lang="en">中文</span><span data-lang="zh">EN</span></button>
+</header>
+
+<h2>${D('html.dashboard')}</h2>
+<div class="dashboard">${summaryCards}</div>
+<div class="severity-bar">${severityBar}</div>
+<div class="legend">${severityLegend}</div>
+
+<details class="info-card">
+  <summary>${D('severity.explanation.title')}</summary>
+  <div class="info-body">
+    <p>${D('severity.explanation.critical')}</p>
+    <p>${D('severity.explanation.high')}</p>
+    <p>${D('severity.explanation.medium')}</p>
+    <p>${D('severity.explanation.low')}</p>
+    <p>${D('severity.explanation.info')}</p>
+  </div>
+</details>
+
+<h2>${D('report.findings')}</h2>
+${findingsHtml || `<p>${D('report.noFindings')}</p>`}
+
+<h2>${D('report.duplicateGroupsSection')}</h2>
+${dupesHtml}
+
+<h2>${D('html.remediationGuide')}</h2>
+${guideHtml}
+
+<footer>${D('html.generatedAt')}: ${new Date().toISOString()}</footer>
+
+<script>
+function setLang(lang){
+  document.documentElement.lang=lang;
+  document.querySelectorAll('[data-lang]').forEach(function(e){e.style.display=e.dataset.lang===lang?'':'none'});
+  localStorage.setItem('asd-lang',lang);
+}
+function toggleLang(){
+  var cur=document.documentElement.lang;
+  setLang(cur==='en'?'zh':'en');
+}
+function copyPrompt(btn){
+  var lang=document.documentElement.lang;
+  var pre=btn.previousElementSibling;
+  var text=pre.querySelector('[data-lang="'+lang+'"]')||pre;
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text.textContent).then(function(){
+      var orig=btn.innerHTML;
+      btn.innerHTML=lang==='en'?'Copied!':'已复制!';
+      setTimeout(function(){btn.innerHTML=orig},2000);
+    });
+  } else {
+    var ta=document.createElement('textarea');ta.value=text.textContent;document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);
+    var orig=btn.innerHTML;
+    btn.innerHTML=lang==='en'?'Copied!':'已复制!';
+    setTimeout(function(){btn.innerHTML=orig},2000);
+  }
+}
+(function(){
+  var initial='${(lang === 'zh' ? 'zh' : 'en')}';
+  var saved=localStorage.getItem('asd-lang');
+  if(saved&&saved!==initial){setLang(saved);}
+})();
+</script>
+</body>
+</html>`;
+}
+
+function writeReport(db, { format, output, includeIgnored, reportsDir, lang }) {
   const data = buildReportData(db, includeIgnored);
-  const content = format === 'json' ? JSON.stringify(data, null, 2) : renderMarkdown(data);
-  const ext = format === 'json' ? 'json' : 'md';
+  let content, ext;
+  if (format === 'json') {
+    content = JSON.stringify(data, null, 2);
+    ext = 'json';
+  } else if (format === 'html') {
+    content = renderHtml(data, lang);
+    ext = 'html';
+  } else {
+    content = renderMarkdown(data, lang);
+    ext = 'md';
+  }
   const outPath = output || path.join(reportsDir, `skill-doctor-report-${Date.now()}.${ext}`);
   ensureDir(path.dirname(outPath));
   fs.writeFileSync(outPath, content, 'utf8');
@@ -645,9 +881,11 @@ function usage() {
   console.log(`agent-skill-doctor CLI
 
 Commands:
-  scan [--full] [--rebuild-index] [--root <path>] [--json]
-  diagnose [--json] [--ci] [--fail-on high|critical|medium] [--rules <dir>] [--include-ignored]
-  report [--format md|json] [--output <path>] [--include-ignored]
+  scan [--full] [--rebuild-index] [--root <path>] [--json] [--lang en|zh]
+  diagnose [--json] [--ci] [--fail-on high|critical|medium] [--rules <dir>] [--include-ignored] [--lang en|zh]
+  report [--format md|json|html] [--output <path>] [--include-ignored] [--lang en|zh]
+  guide [--lang en|zh]
+  fix [--type <type>] [--severity <level>] [--lang en|zh]
   duplicates [--json]
   risks [--json] [--ci] [--fail-on high|critical|medium]
   conflicts [--json] [--ci] [--fail-on high|critical|medium]
@@ -658,6 +896,9 @@ Commands:
   unignore <finding-id>
   ignored list
   help
+
+Fix types: risk, zombie, duplicate, conflict, version_drift, description_quality, scan_warning
+Fix severity: critical, high, medium, low, info
 `);
 }
 
@@ -701,8 +942,9 @@ function runScan(args) {
   }
   const summary = { roots, skills: skills.length, phase1Findings: findingCount, dbPath: config.dbPath };
   recordRun(db, { id: sha256(`${startedAt}:${Math.random()}`), startedAt, finishedAt: nowIso(), status: 'ok', skillCount: skills.length, findingCount, highCount, criticalCount, config: { roots }, summary });
+  if (args.silent) return; // Called from runDiagnose, don't print
   if (args.json) console.log(JSON.stringify({ summary, skills: skills.map(s => ({ id: s.id, slug: s.slug, name: s.name, path: s.location.path, contentHash: s.hashes.contentSha256 })) }, null, 2));
-  else console.log(`Scanned ${skills.length} skills. Phase 1 findings: ${findingCount}. DB: ${config.dbPath}`);
+  else console.log(t('cli.scanned', args.lang || 'en', skills.length, findingCount, config.dbPath));
 }
 
 function rowToSkill(row) {
@@ -730,7 +972,7 @@ function listSkillObjects(db) {
 }
 
 function runDiagnose(args) {
-  runScan({ ...args, json: false });
+  runScan({ ...args, json: false, silent: true });
   const { config, db } = open();
   const skills = listSkillObjects(db);
 
@@ -769,11 +1011,12 @@ function runDiagnose(args) {
 
   if (args.json) console.log(JSON.stringify({ ...data, summary }, null, 2));
   else {
-    console.log(`Skills: ${summary.totalSkills}`);
-    console.log(`Findings: ${summary.totalFindings}`);
-    console.log(`Risk findings: ${summary.riskFindings}`);
-    console.log(`Conflict findings: ${summary.conflictFindings}`);
-    console.log(`Zombie candidates: ${summary.zombieCandidates}`);
+    const lang = args.lang || 'en';
+    console.log(t('cli.skills', lang, summary.totalSkills));
+    console.log(t('cli.findings', lang, summary.totalFindings));
+    console.log(t('cli.riskFindings', lang, summary.riskFindings));
+    console.log(t('cli.conflictFindings', lang, summary.conflictFindings));
+    console.log(t('cli.zombieCandidates', lang, summary.zombieCandidates));
   }
 
   if (args.ci) {
@@ -784,8 +1027,8 @@ function runDiagnose(args) {
 
 function runReport(args) {
   const { config, db } = open();
-  const result = writeReport(db, { format: args.format || 'md', output: args.output ? path.resolve(expandHome(args.output)) : null, includeIgnored: !!args['include-ignored'], reportsDir: config.reportsDir });
-  console.log(`Report written: ${result.path}`);
+  const result = writeReport(db, { format: args.format || 'md', output: args.output ? path.resolve(expandHome(args.output)) : null, includeIgnored: !!args['include-ignored'], reportsDir: config.reportsDir, lang: args.lang || 'en' });
+  console.log(t('cli.reportWritten', args.lang || 'en', result.path));
   if (args.ci) {
     const rows = listFindings(db, !!args['include-ignored']);
     process.exit(exitCodeForFindings(rows, args['fail-on'] || 'high', !!args['include-ignored']));
@@ -803,7 +1046,7 @@ function runDuplicates(args) {
     ...group,
     members: db.prepare('SELECT dgm.*, sr.slug, sr.name, sr.local_path FROM duplicate_group_members dgm JOIN skill_records sr ON sr.id = dgm.skill_id WHERE dgm.group_id = ? ORDER BY role ASC, sr.slug ASC').all(group.id),
   }));
-  if (!groups.length) return outputJsonOrText(args, [], ['No duplicate groups. Run: agent-skill-doctor diagnose']);
+  if (!groups.length) return outputJsonOrText(args, [], [t('cli.noDuplicateGroups', args.lang || 'en')]);
   outputJsonOrText(args, groups, groups.flatMap(group => [
     `${group.id}  ${group.strategy}  confidence=${group.confidence}`,
     ...group.members.map(member => `  - ${member.role}: ${member.slug}  ${member.local_path}`),
@@ -812,7 +1055,7 @@ function runDuplicates(args) {
 
 function runFindingsByType(args, type) {
   const { db } = open();
-  const rows = db.prepare('SELECT * FROM findings WHERE type = ? AND ignored = 0 ORDER BY severity DESC, updated_at DESC').all(type);
+  const rows = db.prepare('SELECT * FROM findings WHERE type = ? AND ignored = 0 ORDER BY CASE severity WHEN \'critical\' THEN 0 WHEN \'high\' THEN 1 WHEN \'medium\' THEN 2 WHEN \'low\' THEN 3 WHEN \'info\' THEN 4 ELSE 5 END, updated_at DESC').all(type);
   const findings = rows.map(row => ({
     id: row.id,
     type: row.type,
@@ -826,7 +1069,7 @@ function runFindingsByType(args, type) {
   outputJsonOrText(
     args,
     findings,
-    findings.length ? findings.map(f => `${f.id}  ${f.severity}  ${f.ruleId || ''}  ${f.title}`) : [`No ${type} findings.`]
+    findings.length ? findings.map(f => `${f.id}  ${f.severity}  ${f.ruleId || ''}  ${f.title}`) : [t('cli.noFindings', args.lang || 'en', type)]
   );
   if (args.ci) process.exit(exitCodeForFindings(rows, args['fail-on'] || 'high', false));
 }
@@ -923,9 +1166,10 @@ function actionIsStale(action) {
 }
 
 function runApply(args) {
+  const lang = args.lang || 'en';
   const planPath = args._[1] ? path.resolve(expandHome(args._[1])) : null;
-  if (!planPath) { console.error('apply requires <plan.json>'); process.exit(3); }
-  if (!args['dry-run']) { console.error('MVP apply only supports --dry-run.'); process.exit(3); }
+  if (!planPath) { console.error(t('cli.applyRequiresPlan', lang)); process.exit(3); }
+  if (!args['dry-run']) { console.error(t('cli.dryRunOnly', lang)); process.exit(3); }
   const plan = JSON.parse(fs.readFileSync(planPath, 'utf8'));
   const actions = (plan.actions || []).map(action => ({
     id: action.id,
@@ -942,21 +1186,147 @@ function runApply(args) {
 }
 
 function runIgnore(args, ignored) {
+  const lang = args.lang || 'en';
   const findingId = args._[1];
-  if (!findingId) { console.error(`${ignored ? 'ignore' : 'unignore'} requires <finding-id>`); process.exit(3); }
+  if (!findingId) { console.error(t('cli.ignoreRequiresId', lang, ignored ? 'ignore' : 'unignore')); process.exit(3); }
   const { db } = open();
   const changes = setIgnored(db, findingId, ignored, args.reason || null, nowIso());
-  if (!changes) { console.error(`Finding not found: ${findingId}`); process.exit(3); }
-  console.log(`${ignored ? 'Ignored' : 'Unignored'} finding: ${findingId}`);
+  if (!changes) { console.error(t('cli.findingNotFound', lang, findingId)); process.exit(3); }
+  console.log(t(ignored ? 'cli.ignoredFinding' : 'cli.unignoredFinding', lang, ignored ? 'Ignored' : 'Unignored', findingId));
 }
 
 function runIgnored(args) {
-  if (args._[1] !== 'list') { console.error('Usage: agent-skill-doctor ignored list'); process.exit(3); }
+  const lang = args.lang || 'en';
+  if (args._[1] !== 'list') { console.error(t('cli.ignoredListUsage', lang)); process.exit(3); }
   const { db } = open();
   const rows = listIgnored(db);
   if (args.json) return console.log(JSON.stringify(rows, null, 2));
-  if (!rows.length) return console.log('No ignored findings.');
+  if (!rows.length) return console.log(t('cli.noIgnored', args.lang || 'en'));
   for (const r of rows) console.log(`${r.id}  ${r.severity}  ${r.type}  ${r.title}  reason=${r.ignored_reason || ''}`);
+}
+
+function runGuide(args) {
+  const lang = args.lang || 'en';
+  const types = ['risk', 'zombie', 'duplicate', 'conflict', 'version_drift', 'description_quality', 'scan_warning'];
+  const lines = [];
+  for (const type of types) {
+    lines.push(`=== ${t(`guide.${type}.title`, lang)} ===`);
+    lines.push('');
+    lines.push(t(`guide.${type}.definition`, lang));
+    lines.push('');
+    lines.push(t(`guide.${type}.cause`, lang));
+    lines.push('');
+    lines.push(t(`guide.${type}.severity`, lang));
+    lines.push('');
+    lines.push(t(`guide.${type}.steps`, lang));
+    lines.push('');
+    lines.push(`${lang === 'zh' ? '示例提示词' : 'Example prompt'}:`);
+    lines.push(`  ${t(`guide.${type}.prompt`, lang, '<skill-path>')}`);
+    lines.push('');
+    lines.push(`${lang === 'zh' ? 'Agent 交互示例' : 'Agent Interaction Example'}:`);
+    lines.push(t(`guide.${type}.agentExample`, lang));
+    lines.push('');
+  }
+  console.log(lines.join('\n'));
+}
+
+function runFix(args) {
+  const { db } = open();
+  const lang = args.lang || 'en';
+  const typeFilter = args.type || null;
+  const severityFilter = args.severity || null;
+
+  // Validate severity
+  const validSeverities = ['critical', 'high', 'medium', 'low', 'info'];
+  if (severityFilter && !validSeverities.includes(severityFilter)) {
+    console.error(`${lang === 'zh' ? '无效的严重程度' : 'Invalid severity'}: ${severityFilter}. ${lang === 'zh' ? '可选值' : 'Valid values'}: ${validSeverities.join(', ')}`);
+    process.exit(3);
+  }
+
+  // Validate type
+  const validTypes = ['risk', 'zombie', 'duplicate', 'conflict', 'version_drift', 'description_quality', 'scan_warning'];
+  if (typeFilter && !validTypes.includes(typeFilter)) {
+    console.error(`${lang === 'zh' ? '无效的问题类型' : 'Invalid type'}: ${typeFilter}. ${lang === 'zh' ? '可选值' : 'Valid values'}: ${validTypes.join(', ')}`);
+    process.exit(3);
+  }
+
+  // Get findings from database
+  let rows = listFindings(db, !!args['include-ignored']);
+
+  // Apply filters
+  if (typeFilter) {
+    rows = rows.filter(r => r.type === typeFilter);
+  }
+  if (severityFilter) {
+    const minRank = severityRank(severityFilter);
+    rows = rows.filter(r => severityRank(r.severity) >= minRank);
+  }
+
+  if (rows.length === 0) {
+    console.log(t('fix.noFindings', lang));
+    return;
+  }
+
+  // Group findings by type
+  const byType = {};
+  for (const row of rows) {
+    if (!byType[row.type]) byType[row.type] = [];
+    byType[row.type].push(row);
+  }
+
+  const lines = [];
+  lines.push(`=== ${t('fix.title', lang)} ===`);
+  lines.push('');
+
+  // Generate prompts for each type
+  for (const [type, findings] of Object.entries(byType)) {
+    const skillMap = {};
+    for (const f of findings) {
+      const fs = getFindingSkills(db, f.id);
+      for (const s of fs) {
+        if (!skillMap[s.slug]) skillMap[s.slug] = { path: s.local_path, findings: [] };
+        skillMap[s.slug].findings.push(f);
+      }
+    }
+
+    lines.push(`--- ${t(`guide.${type}.title`, lang)} (${findings.length}) ---`);
+    lines.push('');
+    lines.push(t(`guide.${type}.definition`, lang));
+    lines.push('');
+
+    // List each skill with its specific findings
+    for (const [slug, info] of Object.entries(skillMap)) {
+      lines.push(`${lang === 'zh' ? '技能' : 'Skill'}: ${slug}`);
+      lines.push(`${lang === 'zh' ? '路径' : 'Path'}: ${info.path}`);
+      lines.push(`${lang === 'zh' ? '问题' : 'Issues'}:`);
+      for (const f of info.findings) {
+        lines.push(`  - [${f.severity.toUpperCase()}] ${f.title}`);
+        if (f.description) lines.push(`    ${f.description.substring(0, 100)}...`);
+        lines.push(`    ID: ${f.id}`);
+      }
+      lines.push('');
+    }
+
+    lines.push(`${lang === 'zh' ? '修复步骤' : 'Fix Steps'}:`);
+    lines.push(t(`guide.${type}.steps`, lang));
+    lines.push('');
+
+    // Generate targeted prompt
+    const allSkills = Object.keys(skillMap);
+    lines.push(`${lang === 'zh' ? '复制以下提示词给 Agent' : 'Copy this prompt to Agent'}:`);
+    lines.push('---');
+    lines.push(`${lang === 'zh' ? '请修复以下技能的问题' : 'Please fix the following skills'}:`);
+    for (const [slug, info] of Object.entries(skillMap)) {
+      lines.push(`\n技能: ${slug} (${info.path})`);
+      for (const f of info.findings) {
+        lines.push(`- [${f.severity}] ${f.title}: ${f.recommendation || t(`guide.${type}.steps`, lang).split('\n')[0]}`);
+      }
+    }
+    lines.push('---');
+    lines.push('');
+  }
+
+  console.log(lines.join('\n'));
 }
 
 function main() {
@@ -966,6 +1336,8 @@ function main() {
     if (command === 'scan') return runScan(args);
     if (command === 'diagnose') return runDiagnose(args);
     if (command === 'report') return runReport(args);
+    if (command === 'guide') return runGuide(args);
+    if (command === 'fix') return runFix(args);
     if (command === 'duplicates') return runDuplicates(args);
     if (command === 'risks') return runFindingsByType(args, 'risk');
     if (command === 'conflicts') return runFindingsByType(args, 'conflict');

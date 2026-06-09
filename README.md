@@ -1,344 +1,196 @@
-# agent-skill-doctor
+<div align="center">
 
-[![npm version](https://badge.fury.io/js/agent-skill-doctor.svg)](https://www.npmjs.com/package/agent-skill-doctor)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Node.js Version](https://img.shields.io/badge/node-%3E%3D22.5.0-brightgreen.svg)](https://nodejs.org/)
+# Agent Skill Doctor
 
-Agent Skill Doctor is a diagnostic and governance tool for AI agent skills.
+*AI Agent Skills 诊断与治理工具——让你的 Skills 健康运行*
 
-## Features
+[![License](https://img.shields.io/badge/License-MIT-3B82F6?style=for-the-badge)](./LICENSE)
+[![npm](https://img.shields.io/npm/v/agent-skill-doctor?style=for-the-badge&logo=npm&logoColor=white)](https://www.npmjs.com/package/agent-skill-doctor)
+[![Node](https://img.shields.io/badge/Node-%3E%3D22.5.0-339933?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Zero Deps](https://img.shields.io/badge/Zero-Dependencies-10B981?style=for-the-badge)](#features)
 
-- **Scan** local skill directories and build SQLite database
-- **Diagnose** skills for quality issues, duplicates, drift, risks, conflicts, and zombies
-- **Plan** safe optimization actions with expected state validation
-- **Apply** changes with dry-run safety checks
-- **Report** in Markdown or JSON format
-- **CI support** with exit codes for automated workflows
+</div>
 
-## Requirements
+---
 
-- Node.js >= 22.5.0 (uses experimental `node:sqlite` module)
-- No external dependencies (zero-dependency package)
+Agent Skill Doctor 是一个专为 AI Agent Skills 设计的诊断与治理工具。它能扫描、分析、检测问题，并生成优化计划，确保你的 Skills 生态健康有序。
 
-## Project Structure
+支持 Claude Code · Codex · OpenCode · Cursor 等平台的 Skills 管理。
 
-```
-agent-skill-doctor/
-├── bin/                    # CLI entry points
-│   ├── agent-skill-doctor.js          # Main CLI
-│   ├── agent-skill-doctor-phase2.js   # Phase 2 analysis
-│   ├── agent-skill-doctor-phase3.js   # Phase 3 conflicts
-│   └── agent-skill-doctor-risk.js     # Risk scanning
-├── src/doctor/             # Core library modules
-│   ├── index.js            # Main exports
-│   ├── phase2.js           # Duplicate/drift detection
-│   ├── conflict.js         # Conflict detection
-│   ├── zombie.js           # Zombie detection
-│   ├── risk-lite.js        # Risk scanning
-│   └── rules.js            # Rules and utilities
-├── rules/default/          # Default risk rules
-│   ├── credential-risk.json
-│   ├── destructive-risk.json
-│   └── shell-network-risk.json
-├── test/                   # Test files
-├── docs/                   # Documentation
-└── package.json            # Package configuration
-```
+## 功能
 
-## Common Use Cases
+| 名字 | 一句话 |
+|---|---|
+| **Scan** | 扫描本地 Skill 目录，构建 SQLite 数据库 |
+| **Diagnose** | 诊断质量问题、重复、漂移、风险、冲突和僵尸 Skill |
+| **Report** | 生成 HTML / Markdown / JSON 格式报告（支持中英文切换） |
+| **Guide** | 输出修复指南，包含可直接给 Agent 的提示词 |
+| **Fix** | 快速生成针对性 Agent 提示词，支持按类型/严重程度筛选 |
+| **Plan** | 生成安全的优化计划，带预期状态验证 |
+| **Apply** | 执行变更，支持 dry-run 安全检查 |
+| **CI** | 支持 CI/CD 集成，提供退出码 |
+| **i18n** | CLI 输出和报告支持中文/英文 |
 
-### Quick Health Check
+## 安装
 
-```bash
-# Scan and get a quick diagnosis
-agent-skill-doctor scan
-agent-skill-doctor diagnose --json
-```
-
-### CI/CD Integration
-
-```bash
-# Fail pipeline on high-risk findings
-agent-skill-doctor diagnose --ci --fail-on high
-
-# Generate report for artifacts
-agent-skill-doctor report --format json --output ./skill-report.json
-```
-
-### Find and Clean Up Duplicates
-
-```bash
-# List all duplicates
-agent-skill-doctor duplicates
-
-# Generate optimization plan
-agent-skill-doctor plan --safe --json --output ./cleanup-plan.json
-
-# Preview changes (dry-run)
-agent-skill-doctor apply ./cleanup-plan.json --dry-run
-```
-
-## Installation
-
-### Via npm (recommended)
+### npm 安装（推荐）
 
 ```bash
 npm install -g agent-skill-doctor
 ```
 
-### From source
+### 从源码安装
 
 ```bash
-git clone https://github.com/anthropics/agent-skill-doctor.git
+git clone https://github.com/sljdxde/agent-skill-doctor.git
 cd agent-skill-doctor
 npm link
 ```
 
-This repository currently contains a safe CLI foundation for scanning and diagnosing agent skills:
-
-- scan local skill directories
-- build `doctor.db` with SQLite
-- compute stable skill/content hashes
-- create stable finding IDs that do not depend on line numbers
-- store `findings` + `finding_skills`
-- detect scan warnings and description quality issues
-- support ignore / unignore
-- export Markdown / JSON reports
-- detect exact / same-source / same-name duplicate groups
-- detect basic version drift by content hash or source ref
-- scan rule-based risks
-- detect basic conflicts
-- detect low-activity / suspected zombie candidates
-- generate safe optimization plans with expected state
-- dry-run apply with stale action checks
-- support CI exit codes
-
-## Requirements
-
-Node.js >= 22.5.0. This prototype uses Node's built-in `node:sqlite` module, which is experimental in Node 22.
-
-## Quick start
-
-### Global installation
-
-After installing via npm:
+## 快速开始
 
 ```bash
-# Scan and diagnose
-agent-skill-doctor scan --json
+# 扫描并诊断
+agent-skill-doctor scan
 agent-skill-doctor diagnose --json
-agent-skill-doctor report --format md --output ./skill-doctor-report.md
-agent-skill-doctor ignored list
 
-# Scan a specific root
+# 生成 HTML 报告（支持中英文切换）
+agent-skill-doctor report --format html --lang zh
+agent-skill-doctor report --format html --lang en
+
+# 查看修复指南（可直接复制提示词给 Agent）
+agent-skill-doctor guide --lang zh
+
+# 快速修复（生成针对性 Agent 提示词）
+agent-skill-doctor fix --lang zh
+agent-skill-doctor fix --type risk --severity high
+```
+
+### 常用命令
+
+```bash
+# 扫描特定目录
 agent-skill-doctor scan --root ~/.skills-manager/skills --json
 
-# Ignore a finding
-agent-skill-doctor ignore <finding-id> --reason "false positive"
-agent-skill-doctor unignore <finding-id>
-```
+# 中文输出
+agent-skill-doctor diagnose --lang zh
 
-### Local development
-
-If running from source:
-
-```bash
-node ./bin/agent-skill-doctor.js scan --json
-node ./bin/agent-skill-doctor.js diagnose --json
-node ./bin/agent-skill-doctor.js report --format md --output ./skill-doctor-report.md
-node ./bin/agent-skill-doctor.js ignored list
-```
-
-## Phase 2 duplicate and drift analysis
-
-`diagnose` runs duplicate and drift analysis automatically. The older Phase 2 overlay is still available for focused debugging:
-
-```bash
-# Global installation
-agent-skill-doctor scan --root ~/.skills-manager/skills
-agent-skill-doctor phase2 analyze --json
-agent-skill-doctor phase2 duplicates
-agent-skill-doctor phase2 drift
-
-# Local development
-node ./bin/agent-skill-doctor.js scan --root ~/.skills-manager/skills
-node ./bin/agent-skill-doctor-phase2.js analyze --json
-node ./bin/agent-skill-doctor-phase2.js duplicates
-node ./bin/agent-skill-doctor-phase2.js drift
-```
-
-Phase 2 writes only to Agent Skill Doctor's own database tables:
-
-```text
-duplicate_groups
-duplicate_group_members
-findings
-finding_skills
-```
-
-It does not write to `skills-manager.db` and does not modify skill files.
-
-## Risk, conflict, zombie, and plans
-
-```bash
-# Global installation
-agent-skill-doctor diagnose --ci --fail-on high
+# 查找重复
 agent-skill-doctor duplicates
+
+# 检测风险
 agent-skill-doctor risks
+
+# 检测冲突
 agent-skill-doctor conflicts
+
+# 检测僵尸 Skill
 agent-skill-doctor zombies
+
+# 快速修复（按类型/严重程度筛选）
+agent-skill-doctor fix --type risk --lang zh
+agent-skill-doctor fix --severity high --lang zh
+agent-skill-doctor fix --type zombie --severity medium
+
+# 生成优化计划
 agent-skill-doctor plan --safe --json --output ./plan.json
+
+# 预览变更（dry-run）
 agent-skill-doctor apply ./plan.json --dry-run
-
-# Local development
-node ./bin/agent-skill-doctor.js diagnose --ci --fail-on high
-node ./bin/agent-skill-doctor.js duplicates
-node ./bin/agent-skill-doctor.js risks
-node ./bin/agent-skill-doctor.js conflicts
-node ./bin/agent-skill-doctor.js zombies
-node ./bin/agent-skill-doctor.js plan --safe --json --output ./plan.json
-node ./bin/agent-skill-doctor.js apply ./plan.json --dry-run
 ```
 
-`apply` is intentionally limited to `--dry-run` in this MVP. It recomputes target content hashes and marks changed actions as `stale_action`.
-
-## Configuration
-
-### Data Directory
-
-Default location:
-
-```text
-~/.agent-skill-doctor/
-  doctor.db
-  reports/
-```
-
-Override with environment variable:
+### CI/CD 集成
 
 ```bash
-# Global installation
-AGENT_SKILL_DOCTOR_HOME=/tmp/asd agent-skill-doctor scan
+# 在 CI 中，高风险时失败
+agent-skill-doctor diagnose --ci --fail-on high
 
-# Local development
-AGENT_SKILL_DOCTOR_HOME=/tmp/asd node ./bin/agent-skill-doctor.js scan
+# 生成制品报告
+agent-skill-doctor report --format json --output ./skill-report.json
 ```
 
-### Custom Risk Rules
+## 与 Agent 联动修复
 
-You can provide custom risk rules directory:
+诊断完成后，你可以将结果交给 AI Agent 自动修复问题：
+
+### 方式一：使用 fix 命令（推荐）
+
+`fix` 命令会针对每个有问题的 Skill 生成详细的 Agent 提示词，包含具体问题描述和修复建议：
 
 ```bash
-agent-skill-doctor diagnose --rules ./my-custom-rules
+# 修复所有问题
+agent-skill-doctor fix --lang zh
+
+# 只修复高风险问题
+agent-skill-doctor fix --type risk --severity high --lang zh
+
+# 只修复僵尸 Skill
+agent-skill-doctor fix --type zombie --lang zh
 ```
 
-Rules should be JSON files following the format in `rules/default/`.
+输出的提示词可以直接复制给 Agent，Agent 会根据具体问题进行针对性修复。
 
-## Library Usage
+### 方式二：使用 HTML 报告的修复指南
 
-You can also use agent-skill-doctor as a Node.js library:
+1. 生成 HTML 报告：`agent-skill-doctor report --format html --lang zh`
+2. 打开报告，查看底部的「修复建议」部分
+3. 每个问题类型都有：问题含义、修复步骤、可复制的 Agent 提示词
+4. 点击「复制」按钮，将提示词粘贴给 Agent 即可
 
-```javascript
-const { 
-  detectDuplicateGroups, 
-  detectVersionDrift, 
-  detectConflicts, 
-  detectZombies, 
-  scanSkillForRisks 
-} = require('agent-skill-doctor');
-
-// Or import specific modules
-const phase2 = require('agent-skill-doctor/phase2');
-const conflict = require('agent-skill-doctor/conflict');
-const zombie = require('agent-skill-doctor/zombie');
-const risk = require('agent-skill-doctor/risk');
-const rules = require('agent-skill-doctor/rules');
-```
-
-### API Reference
-
-#### Phase 2 - Duplicate and Drift Detection
-
-```javascript
-const { detectDuplicateGroups, detectVersionDrift } = require('agent-skill-doctor');
-
-// Detect duplicates
-const duplicates = detectDuplicateGroups(skills);
-// Returns: Array of duplicate groups with type (exact, same-source, same-name)
-
-// Detect version drift
-const drift = detectVersionDrift(skills);
-// Returns: Array of version drift findings
-```
-
-#### Conflict Detection
-
-```javascript
-const { detectConflicts, DEFAULT_CONFLICT_RULES } = require('agent-skill-doctor');
-
-// Detect conflicts between skills
-const conflicts = detectConflicts(skills, DEFAULT_CONFLICT_RULES);
-// Returns: Array of conflicts (e.g., competing package managers)
-```
-
-#### Zombie Detection
-
-```javascript
-const { detectZombies, computeZombieScore } = require('agent-skill-doctor');
-
-// Detect zombie candidates
-const zombies = detectZombies(skills);
-// Returns: Array of zombie findings sorted by score
-
-// Compute individual zombie score
-const score = computeZombieScore(skill);
-// Returns: Number 0-100 (higher = more likely zombie)
-```
-
-#### Risk Scanning
-
-```javascript
-const { scanSkillForRisks, loadJsonRules } = require('agent-skill-doctor');
-
-// Load default rules
-const rules = loadJsonRules('./rules/default');
-
-// Scan skill for risks
-const risks = scanSkillForRisks(skill, rules);
-// Returns: Array of risk findings with severity levels
-```
-
-## Safety
-
-This implementation never writes to `skills-manager.db` and never deletes or overwrites skill files. Any future write operation must go through a dry-run plan and expected-state validation first.
-
-## Publishing to npm
-
-To publish this package to npm:
+### 方式三：使用 guide 命令
 
 ```bash
-# Login to npm
-npm login
+# 查看所有问题类型的修复指南
+agent-skill-doctor guide --lang zh
 
-# Publish the package
-npm publish
+# 将指南输出重定向给 Agent
+agent-skill-doctor guide --lang zh > /tmp/guide.txt
 ```
 
-To publish as a scoped package (e.g., @your-username/agent-skill-doctor):
+### 方式四：直接将诊断结果发给 Agent
 
-```bash
-npm publish --access public
+```
+请帮我修复 agent-skill-doctor 诊断出的问题：
+
+运行命令：
+agent-skill-doctor diagnose --json
+
+根据输出的 findings，逐个修复：
+- risk 类型：添加安全防护
+- zombie 类型：清理或更新僵尸技能
+- duplicate 类型：合并重复技能
+- conflict 类型：解决冲突指令
+- description_quality 类型：完善技能描述
 ```
 
-Or use the provided script:
+## 项目结构
 
-```bash
-./scripts/publish.sh 0.1.0
+```
+agent-skill-doctor/
+├── bin/                    # CLI 入口
+│   ├── agent-skill-doctor.js          # 主 CLI
+│   ├── agent-skill-doctor-phase2.js   # Phase 2 分析（调试用）
+│   ├── agent-skill-doctor-phase3.js   # Phase 3 冲突检测（调试用）
+│   └── agent-skill-doctor-risk.js     # 风险扫描（调试用）
+├── src/doctor/             # 核心库模块
+│   ├── index.js            # 主导出
+│   ├── i18n.js             # 中英文国际化
+│   ├── phase2.js           # 重复/漂移检测
+│   ├── conflict.js         # 冲突检测
+│   ├── zombie.js           # 僵尸检测
+│   ├── risk-lite.js        # 风险扫描
+│   └── rules.js            # 规则和工具
+├── rules/default/          # 默认风险规则
+│   ├── credential-risk.json
+│   ├── destructive-risk.json
+│   └── shell-network-risk.json
+├── test/                   # 测试文件
+└── package.json            # 包配置
 ```
 
-## Examples
+## 库使用
 
-### Basic Library Usage
+除了 CLI，你也可以将 agent-skill-doctor 作为 Node.js 库使用：
 
 ```javascript
 const {
@@ -351,82 +203,127 @@ const {
   DEFAULT_CONFLICT_RULES
 } = require('agent-skill-doctor');
 
-// Analyze your skills
-const duplicates = detectDuplicateGroups(skills);
-const drift = detectVersionDrift(skills);
-const conflicts = detectConflicts(skills, DEFAULT_CONFLICT_RULES);
-const zombies = detectZombies(skills);
+// 或导入特定模块
+const phase2 = require('agent-skill-doctor/phase2');
+const conflict = require('agent-skill-doctor/conflict');
+const zombie = require('agent-skill-doctor/zombie');
+const risk = require('agent-skill-doctor/risk');
+```
 
-// Load risk rules and scan
+### API 示例
+
+```javascript
+// 检测重复
+const duplicates = detectDuplicateGroups(skills);
+
+// 检测版本漂移
+const drift = detectVersionDrift(skills);
+
+// 检测冲突
+const conflicts = detectConflicts(skills, DEFAULT_CONFLICT_RULES);
+
+// 检测僵尸
+const zombies = detectZombies(skills);
+const score = computeZombieScore(skill); // 0.0 - 1.0，越高越可能是僵尸
+
+// 风险扫描
 const rules = loadJsonRules('./rules/default');
 const risks = scanSkillForRisks(skills[0], rules);
 ```
 
-See `examples/basic-usage.js` for a complete working example.
+## 配置
 
-## Troubleshooting
+### 数据目录
 
-### Node.js Version Error
+默认位置：
 
-If you see "ExperimentalWarning: SQLite is an experimental feature":
-
-```bash
-# Check your Node.js version
-node --version
-
-# Should be >= 22.5.0
-# Update Node.js if needed: https://nodejs.org/
+```
+~/.agent-skill-doctor/
+  doctor.db
+  reports/
 ```
 
-### Permission Errors on Global Install
+通过环境变量覆盖：
 
 ```bash
-# Use npx instead of global install
+AGENT_SKILL_DOCTOR_HOME=/tmp/asd agent-skill-doctor scan
+```
+
+### 自定义风险规则
+
+```bash
+agent-skill-doctor diagnose --rules ./my-custom-rules
+```
+
+规则应为 JSON 文件，格式参考 `rules/default/`。
+
+## 环境要求
+
+- Node.js >= 22.5.0（使用实验性 `node:sqlite` 模块）
+- 零外部依赖
+
+## 安全性
+
+此实现不会写入 `skills-manager.db`，也不会删除或覆盖 Skill 文件。任何未来的写操作必须先通过 dry-run 计划和预期状态验证。
+
+## 故障排除
+
+### Node.js 版本错误
+
+如果看到 "ExperimentalWarning: SQLite is an experimental feature"：
+
+```bash
+node --version  # 应 >= 22.5.0
+```
+
+### 全局安装权限错误
+
+```bash
 npx agent-skill-doctor scan
-
-# Or fix npm permissions
-# See: https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally
 ```
 
-### Database Locked Errors
-
-If you get database locked errors:
+### 数据库锁定错误
 
 ```bash
-# Remove the database and rescan
 rm ~/.agent-skill-doctor/doctor.db
 agent-skill-doctor scan
 ```
 
-## Changelog
+## 发布
 
-See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
+### 自动发布（推荐）
 
-### v0.1.0 (Current)
-- Initial npm package release
-- CLI with scan, diagnose, report, duplicates, risks, conflicts, zombies, plan, apply commands
-- Library API for programmatic usage
-- Zero external dependencies
-- SQLite-based local database
-- Configurable risk rules
-- CI/CD support with exit codes
+1. 在 GitHub 仓库设置中添加 `NPM_TOKEN` secret
+2. 在 GitHub Actions 中手动触发 "Version Bump" workflow，选择 patch/minor/major
+3. 自动 bump 版本、打 tag、发布到 npm
 
-## Links
+### 手动发布
 
-- [GitHub Repository](https://github.com/anthropics/agent-skill-doctor)
-- [npm Package](https://www.npmjs.com/package/agent-skill-doctor)
-- [Issue Tracker](https://github.com/anthropics/agent-skill-doctor/issues)
-- [Design Documentation](docs/DESIGN-PHASE1.md)
-- [Changelog](CHANGELOG.md)
+```bash
+npm login
+npm version patch  # 或 minor / major
+git push --tags
+npm publish
+```
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Run tests: `npm test`
-5. Submit a pull request
+1. Fork 仓库
+2. 创建功能分支
+3. 提交变更
+4. 运行测试：`npm test`
+5. 提交 Pull Request
+
+## 链接
+
+- [GitHub 仓库](https://github.com/sljdxde/agent-skill-doctor)
+- [npm 包](https://www.npmjs.com/package/agent-skill-doctor)
+- [Issue 追踪](https://github.com/sljdxde/agent-skill-doctor/issues)
+- [设计文档](https://github.com/sljdxde/agent-skill-doctor/blob/main/docs/DESIGN-PHASE1.md)
+- [更新日志](CHANGELOG.md)
 
 ## License
 
-MIT License - see LICENSE file for details.
+[MIT License](./LICENSE) · 自由使用 / 修改 / 再分发
+
+Made by [@sljdxde](https://github.com/sljdxde)

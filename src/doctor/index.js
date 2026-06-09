@@ -5,6 +5,7 @@ const conflict = require('./conflict');
 const zombie = require('./zombie');
 const riskLite = require('./risk-lite');
 const rules = require('./rules');
+const i18n = require('./i18n');
 
 module.exports = {
   // Phase 2 - Duplicate and drift detection
@@ -41,5 +42,9 @@ module.exports = {
   normalizeAnchor: rules.normalizeAnchor,
   normalizeText: rules.normalizeText,
   sha256: rules.sha256,
-  validPatternId: rules.validPatternId
+  validPatternId: rules.validPatternId,
+
+  // i18n
+  t: i18n.t,
+  dictionaries: i18n.dictionaries
 };

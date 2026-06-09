@@ -1,0 +1,360 @@
+'use strict';
+
+const en = {
+  // CLI messages
+  'cli.scanned': 'Scanned %s skills. Phase 1 findings: %s. DB: %s',
+  'cli.skills': 'Skills: %s',
+  'cli.findings': 'Findings: %s',
+  'cli.riskFindings': 'Risk findings: %s',
+  'cli.conflictFindings': 'Conflict findings: %s',
+  'cli.zombieCandidates': 'Zombie candidates: %s',
+  'cli.reportWritten': 'Report written: %s',
+  'cli.noFindings': 'No %s findings.',
+  'cli.noDuplicateGroups': 'No duplicate groups. Run: agent-skill-doctor diagnose',
+  'cli.ignoredFinding': '%s finding: %s',
+  'cli.unignoredFinding': '%s finding: %s',
+  'cli.noIgnored': 'No ignored findings.',
+  'cli.applyRequiresPlan': 'apply requires <plan.json>',
+  'cli.dryRunOnly': 'MVP apply only supports --dry-run.',
+  'cli.ignoreRequiresId': '%s requires <finding-id>',
+  'cli.findingNotFound': 'Finding not found: %s',
+  'cli.ignoredListUsage': 'Usage: agent-skill-doctor ignored list',
+
+  // Report labels
+  'report.title': 'Agent Skill Doctor Report',
+  'report.summary': 'Summary',
+  'report.totalSkills': 'Total skills',
+  'report.totalFindings': 'Total findings',
+  'report.duplicateGroups': 'Duplicate groups',
+  'report.versionDriftFindings': 'Version drift findings',
+  'report.riskFindings': 'Risk findings',
+  'report.conflictFindings': 'Conflict findings',
+  'report.zombieCandidates': 'Zombie candidates',
+  'report.ignoredFindings': 'Ignored findings',
+  'report.bySeverity': 'By severity',
+  'report.byType': 'By type',
+  'report.criticalRisks': 'Critical Risks',
+  'report.noCriticalRisks': 'No critical risks.',
+  'report.duplicateGroupsSection': 'Duplicate Groups',
+  'report.noDuplicateGroups': 'No duplicate groups.',
+  'report.findings': 'Findings',
+  'report.noFindings': 'No findings.',
+  'report.skills': 'Skills',
+  'report.recommendation': 'Recommendation',
+  'report.severity': 'Severity',
+  'report.type': 'Type',
+  'report.id': 'ID',
+  'report.detector': 'Detector',
+  'report.status': 'Status',
+
+  // HTML-specific
+  'html.dashboard': 'Dashboard',
+  'html.severityChart': 'Severity Distribution',
+  'html.typeChart': 'Type Distribution',
+  'html.remediationGuide': 'Remediation Guide',
+  'html.toggleLang': '中文',
+  'html.ignored': 'Ignored',
+  'html.generatedAt': 'Generated at',
+  'html.copyPrompt': 'Copy',
+  'html.copied': 'Copied!',
+  'html.viewGuide': 'View fix guide',
+  'html.skillsInvolved': 'Skills involved',
+
+  // Severity labels
+  'severity.critical': 'Critical',
+  'severity.high': 'High',
+  'severity.medium': 'Medium',
+  'severity.low': 'Low',
+  'severity.info': 'Info',
+
+  // Type labels
+  'type.risk': 'Risk',
+  'type.conflict': 'Conflict',
+  'type.zombie': 'Zombie',
+  'type.duplicate': 'Duplicate',
+  'type.version_drift': 'Version Drift',
+  'type.description_quality': 'Description Quality',
+  'type.scan_warning': 'Scan Warning',
+
+  // Guide entries
+  'guide.risk.title': 'Risk Findings',
+  'guide.risk.definition': 'Risk findings indicate that a skill contains code patterns or instructions that could potentially harm the system.',
+  'guide.risk.cause': 'Common causes:\n• Skill contains shell command execution (bash, powershell)\n• Skill contains file deletion operations (rm, rmdir, del)\n• Skill accesses credentials or secrets (API keys, passwords)\n• Skill downloads or executes remote code\n• Skill modifies system configurations',
+  'guide.risk.severity': 'Severity explanation:\n• Critical: May cause data loss or system damage\n• High: May leak sensitive info or execute dangerous operations\n• Medium: Potential risk, requires user confirmation',
+  'guide.risk.meaning': 'The skill contains potentially dangerous patterns such as shell commands, file deletion, or credential access that could cause unintended damage.',
+  'guide.risk.steps': 'Fix steps:\n1. Open the skill\'s SKILL.md file\n2. Locate the risky code lines indicated in the report\n3. Add safety measures:\n   - Add user confirmation before dangerous operations\n   - Add --dry-run mode\n   - Limit operation scope (e.g., only specific file types)\n4. Document known risks in the skill description\n5. Re-run diagnosis to verify the fix',
+  'guide.risk.prompt': 'Please review the skill at "%s" and add safety guardrails. Specifically: add confirmation before destructive operations, document risks in the description, and consider adding a --dry-run flag.',
+  'guide.risk.agentExample': 'Agent interaction example:\nUser: Please fix the security risks in the storage-analyzer skill\nAgent: I\'ll check the SKILL.md file, find the shell command execution parts, and add user confirmation prompts...',
+
+  'guide.zombie.title': 'Zombie Skills',
+  'guide.zombie.definition': 'Zombie skills are skills that have not been used for a long time and may be forgotten or abandoned.',
+  'guide.zombie.cause': 'Common causes:\n• Skill was installed but never triggered\n• Skill description is missing, so agent can\'t determine when to use it\n• Skill functionality has been replaced by another skill\n• Skill author stopped maintaining it\n• Skill is incompatible with current agent version',
+  'guide.zombie.severity': 'Severity explanation:\n• Medium: Zombie score >= 0.8, strongly recommended to clean up\n• Low: Zombie score 0.4-0.8, recommended to check if needed',
+  'guide.zombie.meaning': 'The skill appears unused or abandoned — it has low activity, may lack a description, and shows signs of being forgotten.',
+  'guide.zombie.steps': 'Fix steps:\n1. Check if the skill is referenced in any project config\n2. Test if the skill still works properly\n3. If not needed:\n   - Delete the skill directory\n   - Update related configurations\n4. If needed:\n   - Update the skill description\n   - Test compatibility with current agent\n   - Add trigger condition documentation',
+  'guide.zombie.prompt': 'Please evaluate the skill at "%s". Check if it is still referenced in any project. If unused, remove it. If needed, update its description and verify compatibility.',
+  'guide.zombie.agentExample': 'Agent interaction example:\nUser: Please help me clean up zombie skills\nAgent: I\'ll check your skill list and find the ones that haven\'t been used for a long time...',
+
+  'guide.duplicate.title': 'Duplicate Skills',
+  'guide.duplicate.definition': 'Duplicate skills are multiple skills with identical or highly similar functionality, causing resource waste and selection confusion.',
+  'guide.duplicate.cause': 'Common causes:\n• Installed different versions of the same skill from different sources\n• Manually copied skill directories\n• Different skill names but same content\n• Multiple branch versions of the same skill',
+  'guide.duplicate.severity': 'Severity explanation:\n• Medium: Exact duplicate (exact_duplicate)\n• Low: Same source or same name duplicate',
+  'guide.duplicate.meaning': 'Multiple skills with very similar content or purpose were detected. This causes confusion during skill selection and wastes maintenance effort.',
+  'guide.duplicate.steps': 'Fix steps:\n1. Compare content differences between duplicate skills\n2. Choose the best-maintained version as canonical\n3. Delete other duplicate versions\n4. Update project configs to reference the correct skill\n5. If presets reference deleted skills, update presets',
+  'guide.duplicate.prompt': 'Please review the duplicate skill group and keep only the canonical version. Remove duplicates and update any preset references.',
+  'guide.duplicate.agentExample': 'Agent interaction example:\nUser: Please help me merge duplicate skills\nAgent: I\'ll compare the content of these skills and find the best version...',
+
+  'guide.conflict.title': 'Conflict Findings',
+  'guide.conflict.definition': 'Conflict findings indicate that two or more skills give contradictory instructions, causing uncertain agent behavior.',
+  'guide.conflict.cause': 'Common causes:\n• One skill requires npm, another requires yarn\n• One skill requires JSON output, another requires YAML\n• One skill requires TypeScript, another requires JavaScript\n• Unclear skill scope definitions',
+  'guide.conflict.severity': 'Severity explanation:\n• Medium: Clear instruction conflict exists',
+  'guide.conflict.meaning': 'Two or more skills give contradictory instructions (e.g., conflicting package managers or output formats). This confuses the agent at runtime.',
+  'guide.conflict.steps': 'Fix steps:\n1. Determine which instruction takes priority in your workflow\n2. Modify the lower-priority skill to narrow its scope\n3. Or delete the lower-priority skill\n4. If both are needed, consider:\n   - Create different presets for different projects\n   - Clarify applicable scenarios in skill descriptions',
+  'guide.conflict.prompt': 'Please resolve the conflict between skills at "%s". Decide which instruction takes priority and remove or scope-limit the other.',
+  'guide.conflict.agentExample': 'Agent interaction example:\nUser: Please help me resolve skill conflicts\nAgent: I\'ll check the conflicting skills and analyze their instruction differences...',
+
+  'guide.version_drift.title': 'Version Drift',
+  'guide.version_drift.definition': 'Version drift occurs when the same skill is installed at different versions in different locations, causing inconsistent behavior.',
+  'guide.version_drift.cause': 'Common causes:\n• Installed the same skill in multiple directories\n• Manually updated some installations\n• Used different installation sources\n• Skill updated but not synced across all installations',
+  'guide.version_drift.severity': 'Severity explanation:\n• Medium: Version inconsistency exists',
+  'guide.version_drift.meaning': 'The same upstream skill is installed at different versions or commits across your skill directories. This can cause inconsistent agent behavior.',
+  'guide.version_drift.steps': 'Fix steps:\n1. Identify which version is the latest or desired one\n2. Delete old version installations\n3. Reinstall the latest version\n4. Consider using a single installation location to prevent future drift\n5. If multiple versions are needed, use version management tools',
+  'guide.version_drift.prompt': 'Please update all installations of skill "%s" to the latest version and consolidate to a single install location if possible.',
+  'guide.version_drift.agentExample': 'Agent interaction example:\nUser: Please help me unify skill versions\nAgent: I\'ll check all installation locations and find the latest version...',
+
+  'guide.description_quality.title': 'Description Quality',
+  'guide.description_quality.definition': 'Description quality issues indicate that the skill\'s SKILL.md file is missing necessary information or has unclear descriptions.',
+  'guide.description_quality.cause': 'Common causes:\n• Skill author didn\'t provide complete description\n• Description is too brief, missing key information\n• No trigger conditions specified\n• No input/output documented\n• Known risks not recorded',
+  'guide.description_quality.severity': 'Severity explanation:\n• Medium: Description missing or severely insufficient\n• Low: Description can be improved',
+  'guide.description_quality.meaning': 'The skill description is missing, too short, or lacks important information like trigger conditions, inputs/outputs, or risk warnings.',
+  'guide.description_quality.steps': 'Fix steps:\n1. Open the skill\'s SKILL.md file\n2. Add or improve the description section:\n   - One-sentence skill purpose\n   - Trigger conditions (when to use)\n   - Input parameter descriptions\n   - Output result descriptions\n   - Known risks and limitations\n3. Keep description concise (recommended under 300 words)\n4. Use clear formatting (headings, lists)',
+  'guide.description_quality.prompt': 'Please improve the description for the skill at "%s". Add trigger conditions, input/output descriptions, and any risk warnings. Keep it concise but complete.',
+  'guide.description_quality.agentExample': 'Agent interaction example:\nUser: Please help me improve the skill description\nAgent: I\'ll check the SKILL.md file and add missing information...',
+
+  'guide.scan_warning.title': 'Scan Warnings',
+  'guide.scan_warning.definition': 'Scan warnings indicate that the skill directory has structural or file issues that affect normal skill loading.',
+  'guide.scan_warning.cause': 'Common causes:\n• Skill directory missing SKILL.md file\n• SKILL.md YAML frontmatter format errors\n• Frontmatter missing required fields (name, description)\n• File encoding issues',
+  'guide.scan_warning.severity': 'Severity explanation:\n• Medium: Missing SKILL.md or severe frontmatter errors\n• Low: Minor frontmatter issues',
+  'guide.scan_warning.meaning': 'The skill directory has structural issues such as a missing SKILL.md file or malformed frontmatter metadata.',
+  'guide.scan_warning.steps': 'Fix steps:\n1. Ensure SKILL.md exists in the skill directory\n2. Check YAML frontmatter format:\n   - Must start and end with ---\n   - Use valid key: value pairs\n   - Required fields: name, description\n3. Add clear title and description\n4. Ensure file encoding is UTF-8',
+  'guide.scan_warning.prompt': 'Please fix the structural issues with the skill at "%s". Add a proper SKILL.md with valid YAML frontmatter including name, description, and source fields.',
+  'guide.scan_warning.agentExample': 'Agent interaction example:\nUser: Please help me fix skill structure issues\nAgent: I\'ll check the skill directory and create or fix the SKILL.md file...',
+
+  'guide.default.title': 'General Findings',
+  'guide.default.definition': 'General findings are other types of issues that require manual review.',
+  'guide.default.cause': 'Common causes:\n• Issues that don\'t fit into the specific categories above\n• Special cases requiring manual judgment',
+  'guide.default.severity': 'Severity explanation:\n• Depends on the specific issue',
+  'guide.default.meaning': 'A diagnostic finding was detected that requires review.',
+  'guide.default.steps': 'Fix steps:\n1. Review finding details and evidence\n2. Follow the provided recommendations\n3. Re-run diagnosis to verify the fix',
+  'guide.default.prompt': 'Please review and fix the finding "%s" as described in the diagnostic report.',
+  'guide.default.agentExample': 'Agent interaction example:\nUser: Please help me fix this issue\nAgent: I\'ll check the issue details and fix it according to the recommendations...',
+
+  // Severity explanations
+  'severity.explanation.title': 'Severity Explanation',
+  'severity.explanation.critical': 'Critical: May cause data loss, system damage, or security vulnerabilities. Requires immediate fix.',
+  'severity.explanation.high': 'High: May leak sensitive info or execute dangerous operations. Recommended to fix soon.',
+  'severity.explanation.medium': 'Medium: Potential risk or quality issue. Recommended to fix during next maintenance.',
+  'severity.explanation.low': 'Low: Minor issue or improvement suggestion. Can be fixed at convenience.',
+  'severity.explanation.info': 'Info: For reference only, does not affect functionality or security.',
+
+  // Fix command
+  'fix.title': 'Fix Guide',
+  'fix.selectType': 'Select issue type to fix:',
+  'fix.selectSeverity': 'Select severity filter:',
+  'fix.generating': 'Generating fix prompt...',
+  'fix.promptGenerated': 'Fix prompt generated, please copy to Agent:',
+  'fix.noFindings': 'No matching issues found.',
+  'fix.copyPrompt': 'Copy Prompt',
+  'fix.copied': 'Copied!',
+};
+
+const zh = {
+  'cli.scanned': '已扫描 %s 个技能。阶段1发现: %s。数据库: %s',
+  'cli.skills': '技能数: %s',
+  'cli.findings': '发现数: %s',
+  'cli.riskFindings': '风险发现: %s',
+  'cli.conflictFindings': '冲突发现: %s',
+  'cli.zombieCandidates': '僵尸技能: %s',
+  'cli.reportWritten': '报告已写入: %s',
+  'cli.noFindings': '没有 %s 类型的发现。',
+  'cli.noDuplicateGroups': '没有重复组。运行: agent-skill-doctor diagnose',
+  'cli.ignoredFinding': '%s 发现: %s',
+  'cli.unignoredFinding': '%s 发现: %s',
+  'cli.noIgnored': '没有被忽略的发现。',
+  'cli.applyRequiresPlan': 'apply 命令需要 <plan.json> 参数',
+  'cli.dryRunOnly': 'MVP 版本的 apply 仅支持 --dry-run 模式。',
+  'cli.ignoreRequiresId': '%s 命令需要 <finding-id> 参数',
+  'cli.findingNotFound': '未找到该发现: %s',
+  'cli.ignoredListUsage': '用法: agent-skill-doctor ignored list',
+
+  'report.title': 'Agent 技能诊断报告',
+  'report.summary': '概要',
+  'report.totalSkills': '技能总数',
+  'report.totalFindings': '发现总数',
+  'report.duplicateGroups': '重复组',
+  'report.versionDriftFindings': '版本漂移发现',
+  'report.riskFindings': '风险发现',
+  'report.conflictFindings': '冲突发现',
+  'report.zombieCandidates': '僵尸技能',
+  'report.ignoredFindings': '已忽略发现',
+  'report.bySeverity': '按严重性',
+  'report.byType': '按类型',
+  'report.criticalRisks': '严重风险',
+  'report.noCriticalRisks': '没有严重风险。',
+  'report.duplicateGroupsSection': '重复组',
+  'report.noDuplicateGroups': '没有重复组。',
+  'report.findings': '发现列表',
+  'report.noFindings': '没有发现。',
+  'report.skills': '技能列表',
+  'report.recommendation': '建议',
+  'report.severity': '严重性',
+  'report.type': '类型',
+  'report.id': 'ID',
+  'report.detector': '检测器',
+  'report.status': '状态',
+
+  'html.dashboard': '仪表盘',
+  'html.severityChart': '严重性分布',
+  'html.typeChart': '类型分布',
+  'html.remediationGuide': '修复建议',
+  'html.toggleLang': 'EN',
+  'html.ignored': '已忽略',
+  'html.generatedAt': '生成时间',
+  'html.copyPrompt': '复制',
+  'html.copied': '已复制！',
+  'html.viewGuide': '查看修复指南',
+  'html.skillsInvolved': '涉及技能',
+
+  'severity.critical': '严重',
+  'severity.high': '高',
+  'severity.medium': '中',
+  'severity.low': '低',
+  'severity.info': '信息',
+
+  'type.risk': '风险',
+  'type.conflict': '冲突',
+  'type.zombie': '僵尸',
+  'type.duplicate': '重复',
+  'type.version_drift': '版本漂移',
+  'type.description_quality': '描述质量',
+  'type.scan_warning': '扫描警告',
+
+  'guide.risk.title': '风险发现',
+  'guide.risk.definition': '风险发现是指技能中包含可能对系统造成损害的代码模式或指令。',
+  'guide.risk.cause': '常见成因：\n• 技能包含 shell 命令执行（如 bash、powershell）\n• 技能包含文件删除操作（如 rm、rmdir、del）\n• 技能访问凭证或密钥（如 API key、password）\n• 技能下载或执行远程代码\n• 技能修改系统配置',
+  'guide.risk.severity': '严重程度说明：\n• Critical（严重）：可能导致数据丢失或系统损坏\n• High（高）：可能泄露敏感信息或执行危险操作\n• Medium（中）：存在潜在风险，需要用户确认',
+  'guide.risk.meaning': '该技能包含潜在危险模式，如 shell 命令、文件删除或凭证访问，可能造成意外损害。',
+  'guide.risk.steps': '修复步骤：\n1. 打开技能的 SKILL.md 文件\n2. 找到报告中指出的风险代码行\n3. 添加安全防护措施：\n   - 在危险操作前添加用户确认提示\n   - 添加 --dry-run 试运行模式\n   - 限制操作范围（如只处理特定文件类型）\n4. 在技能描述中记录已知风险\n5. 重新运行诊断验证修复',
+  'guide.risk.prompt': '请审查技能 "%s" 并添加安全防护。具体包括：在破坏性操作前添加确认、在描述中记录风险，并考虑添加 --dry-run 标志。',
+  'guide.risk.agentExample': 'Agent 交互示例：\n用户：请帮我修复 storage-analyzer 技能的安全风险\nAgent：我来检查该技能的 SKILL.md 文件，找到 shell 命令执行的部分，添加用户确认提示...',
+
+  'guide.zombie.title': '僵尸技能',
+  'guide.zombie.definition': '僵尸技能是指长期未使用、可能已被遗忘或废弃的技能。',
+  'guide.zombie.cause': '常见成因：\n• 技能安装后从未被触发过\n• 技能描述缺失，agent 无法判断何时使用\n• 技能功能已被其他技能替代\n• 技能作者停止维护\n• 技能与当前 agent 版本不兼容',
+  'guide.zombie.severity': '严重程度说明：\n• Medium（中）：僵尸分数 >= 0.8，强烈建议清理\n• Low（低）：僵尸分数 0.4-0.8，建议检查是否需要',
+  'guide.zombie.meaning': '该技能似乎未使用或已被遗忘——活跃度低、可能缺少描述，并显示出被遗弃的迹象。',
+  'guide.zombie.steps': '修复步骤：\n1. 检查技能是否在任何项目配置中被引用\n2. 测试技能是否还能正常工作\n3. 如果不需要：\n   - 删除技能目录\n   - 更新相关配置\n4. 如果需要保留：\n   - 更新技能描述\n   - 测试与当前 agent 的兼容性\n   - 添加触发条件说明',
+  'guide.zombie.prompt': '请评估技能 "%s"。检查是否仍有项目引用。如未使用则移除；如需要则更新描述并验证兼容性。',
+  'guide.zombie.agentExample': 'Agent 交互示例：\n用户：请帮我清理僵尸技能\nAgent：我来检查你的技能列表，找出长期未使用的技能...',
+
+  'guide.duplicate.title': '重复技能',
+  'guide.duplicate.definition': '重复技能是指多个技能功能相同或高度相似，造成资源浪费和选择困惑。',
+  'guide.duplicate.cause': '常见成因：\n• 从不同来源安装了同一技能的不同版本\n• 手动复制了技能目录\n• 技能名称不同但内容相同\n• 同一技能的多个分支版本',
+  'guide.duplicate.severity': '严重程度说明：\n• Medium（中）：完全重复（exact_duplicate）\n• Low（低）：来源相同或名称相同的重复',
+  'guide.duplicate.meaning': '检测到多个内容或用途非常相似的技能。这会在技能选择时造成困惑并浪费维护精力。',
+  'guide.duplicate.steps': '修复步骤：\n1. 比较重复技能的内容差异\n2. 选择维护最好的版本作为规范版本\n3. 删除其他重复版本\n4. 更新项目配置，确保引用正确的技能\n5. 如果有预设引用了被删除的技能，更新预设',
+  'guide.duplicate.prompt': '请审查重复技能组，仅保留规范版本。移除重复项并更新预设引用。',
+  'guide.duplicate.agentExample': 'Agent 交互示例：\n用户：请帮我合并重复的技能\nAgent：我来比较这些技能的内容，找出最佳版本...',
+
+  'guide.conflict.title': '冲突发现',
+  'guide.conflict.definition': '冲突发现是指两个或多个技能给出了相互矛盾的指令，导致 agent 行为不确定。',
+  'guide.conflict.cause': '常见成因：\n• 一个技能要求使用 npm，另一个要求使用 yarn\n• 一个技能要求输出 JSON，另一个要求输出 YAML\n• 一个技能要求使用 TypeScript，另一个要求使用 JavaScript\n• 技能的作用域定义不清晰',
+  'guide.conflict.severity': '严重程度说明：\n• Medium（中）：存在明确的指令冲突',
+  'guide.conflict.meaning': '两个或多个技能给出了矛盾的指令（如冲突的包管理器或输出格式）。这会在运行时使 agent 困惑。',
+  'guide.conflict.steps': '修复步骤：\n1. 确定哪个指令在你的工作流中优先\n2. 修改低优先级技能，缩小其作用范围\n3. 或者删除低优先级技能\n4. 如果两者都需要，考虑：\n   - 为不同项目创建不同预设\n   - 在技能描述中明确适用场景',
+  'guide.conflict.prompt': '请解决技能 "%s" 之间的冲突。确定优先指令并移除或限制另一个的范围。',
+  'guide.conflict.agentExample': 'Agent 交互示例：\n用户：请帮我解决技能冲突\nAgent：我来检查冲突的技能，分析它们的指令差异...',
+
+  'guide.version_drift.title': '版本漂移',
+  'guide.version_drift.definition': '版本漂移是指同一技能在不同位置安装了不同版本，导致行为不一致。',
+  'guide.version_drift.cause': '常见成因：\n• 在多个目录安装了同一技能\n• 手动更新了部分安装\n• 使用了不同的安装源\n• 技能更新后未同步所有安装',
+  'guide.version_drift.severity': '严重程度说明：\n• Medium（中）：存在版本不一致',
+  'guide.version_drift.meaning': '同一上游技能在不同技能目录中安装了不同版本或提交。这会导致 agent 行为不一致。',
+  'guide.version_drift.steps': '修复步骤：\n1. 确定哪个版本是最新的或期望的版本\n2. 删除旧版本的安装\n3. 重新安装最新版本\n4. 考虑使用单一安装位置防止未来漂移\n5. 如果需要多版本，使用版本管理工具',
+  'guide.version_drift.prompt': '请将技能 "%s" 的所有安装更新到最新版本，如可能请合并到单一安装位置。',
+  'guide.version_drift.agentExample': 'Agent 交互示例：\n用户：请帮我统一技能版本\nAgent：我来检查所有安装位置，找出最新版本...',
+
+  'guide.description_quality.title': '描述质量',
+  'guide.description_quality.definition': '描述质量问题是指标技能的 SKILL.md 文件缺少必要信息或描述不清晰。',
+  'guide.description_quality.cause': '常见成因：\n• 技能作者未提供完整描述\n• 描述过于简短，缺少关键信息\n• 未说明触发条件\n• 未说明输入输出\n• 未记录已知风险',
+  'guide.description_quality.severity': '严重程度说明：\n• Medium（中）：描述缺失或严重不足\n• Low（低）：描述可以改进',
+  'guide.description_quality.meaning': '技能描述缺失、过短或缺少重要信息，如触发条件、输入/输出或风险警告。',
+  'guide.description_quality.steps': '修复步骤：\n1. 打开技能的 SKILL.md 文件\n2. 添加或完善描述部分：\n   - 一句话说明技能用途\n   - 触发条件（何时使用）\n   - 输入参数说明\n   - 输出结果说明\n   - 已知风险和限制\n3. 保持描述简洁（建议 300 字以内）\n4. 使用清晰的格式（标题、列表）',
+  'guide.description_quality.prompt': '请改进技能 "%s" 的描述。添加触发条件、输入/输出描述和风险警告。保持简洁但完整。',
+  'guide.description_quality.agentExample': 'Agent 交互示例：\n用户：请帮我完善技能描述\nAgent：我来检查 SKILL.md 文件，添加缺失的信息...',
+
+  'guide.scan_warning.title': '扫描警告',
+  'guide.scan_warning.definition': '扫描警告是指技能目录的结构或文件存在问题，影响技能的正常加载。',
+  'guide.scan_warning.cause': '常见成因：\n• 技能目录缺少 SKILL.md 文件\n• SKILL.md 的 YAML frontmatter 格式错误\n• frontmatter 缺少必要字段（如 name、description）\n• 文件编码问题',
+  'guide.scan_warning.severity': '严重程度说明：\n• Medium（中）：缺少 SKILL.md 或 frontmatter 严重错误\n• Low（低）：frontmatter 有小问题',
+  'guide.scan_warning.meaning': '技能目录存在结构问题，如缺少 SKILL.md 文件或 frontmatter 元数据格式错误。',
+  'guide.scan_warning.steps': '修复步骤：\n1. 确保技能目录中存在 SKILL.md 文件\n2. 检查 YAML frontmatter 格式：\n   - 必须以 --- 开头和结尾\n   - 使用有效的 key: value 对\n   - 必需字段：name、description\n3. 添加清晰的标题和描述\n4. 确保文件编码为 UTF-8',
+  'guide.scan_warning.prompt': '请修复技能 "%s" 的结构问题。添加带有有效 YAML frontmatter 的 SKILL.md，包括 name、description 和 source 字段。',
+  'guide.scan_warning.agentExample': 'Agent 交互示例：\n用户：请帮我修复技能结构问题\nAgent：我来检查技能目录，创建或修复 SKILL.md 文件...',
+
+  'guide.default.title': '通用发现',
+  'guide.default.definition': '通用发现是指需要人工审查的其他类型问题。',
+  'guide.default.cause': '常见成因：\n• 不属于上述特定类别的问题\n• 需要人工判断的特殊情况',
+  'guide.default.severity': '严重程度说明：\n• 根据具体问题而定',
+  'guide.default.meaning': '检测到需要审查的诊断发现。',
+  'guide.default.steps': '修复步骤：\n1. 审查发现详情和证据\n2. 按照提供的建议操作\n3. 重新运行诊断以验证修复',
+  'guide.default.prompt': '请按照诊断报告中的描述审查并修复发现 "%s"。',
+  'guide.default.agentExample': 'Agent 交互示例：\n用户：请帮我修复这个问题\nAgent：我来查看问题详情，按照建议进行修复...',
+
+  // Severity explanations
+  'severity.explanation.title': '严重程度说明',
+  'severity.explanation.critical': '严重（Critical）：可能导致数据丢失、系统损坏或安全漏洞。需要立即修复。',
+  'severity.explanation.high': '高（High）：可能泄露敏感信息或执行危险操作。建议尽快修复。',
+  'severity.explanation.medium': '中（Medium）：存在潜在风险或质量问题。建议在下次维护时修复。',
+  'severity.explanation.low': '低（Low）：小问题或改进建议。可以择机修复。',
+  'severity.explanation.info': '信息（Info）：仅供参考，不影响功能或安全。',
+
+  // Fix command
+  'fix.title': '修复指南',
+  'fix.selectType': '请选择要修复的问题类型：',
+  'fix.selectSeverity': '请选择严重程度筛选：',
+  'fix.generating': '正在生成修复提示词...',
+  'fix.promptGenerated': '修复提示词已生成，请复制给 Agent：',
+  'fix.noFindings': '没有找到符合条件的问题。',
+  'fix.copyPrompt': '复制提示词',
+  'fix.copied': '已复制！',
+};
+
+const dictionaries = { en, zh };
+const _missingKeys = new Set();
+
+// Development-time parity check: warn if en/zh dictionaries are out of sync
+if (typeof process !== 'undefined' && process.env && process.env.ASD_DEBUG) {
+  const enKeys = new Set(Object.keys(en));
+  const zhKeys = new Set(Object.keys(zh));
+  for (const k of enKeys) { if (!zhKeys.has(k)) process.stderr.write(`[i18n] key in en but missing in zh: ${k}\n`); }
+  for (const k of zhKeys) { if (!enKeys.has(k)) process.stderr.write(`[i18n] key in zh but missing in en: ${k}\n`); }
+}
+
+function t(key, lang, ...args) {
+  const dict = dictionaries[lang] || dictionaries.en;
+  const hasKey = key in dict || key in dictionaries.en;
+  if (!hasKey && !_missingKeys.has(key)) {
+    _missingKeys.add(key);
+    if (typeof process !== 'undefined' && process.env && process.env.ASD_DEBUG) {
+      process.stderr.write(`[i18n] missing key: ${key}\n`);
+    }
+  }
+  let template = dict[key] || dictionaries.en[key] || key;
+  for (const arg of args) {
+    template = template.replace('%s', String(arg));
+  }
+  return template;
+}
+
+module.exports = { t, en, zh, dictionaries };
