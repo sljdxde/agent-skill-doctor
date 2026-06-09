@@ -1010,10 +1010,27 @@ function renderHtml(data, lang, reportPath) {
     </details>`;
   }).join('\n');
 
-  // Duplicate groups
+  // Duplicate groups — show skill names + paths instead of hash IDs
+  const skillInfoMap = {};
+  for (const s of data.skills) skillInfoMap[s.id] = { name: s.name || s.slug || s.id, path: s.local_path || '' };
+  const strategyLabels = {
+    exact_duplicate: { en: 'Exact duplicate', zh: '完全重复' },
+    same_source_duplicate: { en: 'Same source', zh: '同源重复' },
+    same_name_duplicate: { en: 'Same name', zh: '同名重复' },
+  };
   const dupesHtml = data.duplicateGroups.length === 0
     ? `<p>${D('report.noDuplicateGroups')}</p>`
-    : `<table class="dupe-table"><thead><tr><th>ID</th><th>Strategy</th><th>Confidence</th></tr></thead><tbody>${data.duplicateGroups.map(g => `<tr><td><code>${escapeHtml(g.id)}</code></td><td>${escapeHtml(g.strategy)}</td><td>${escapeHtml(String(g.confidence))}</td></tr>`).join('')}</tbody></table>`;
+    : data.duplicateGroups.map(g => {
+        const members = (data.duplicateGroupMembers || []).filter(m => m.group_id === g.id);
+        const skillItems = members.map(m => {
+          const info = skillInfoMap[m.skill_id] || { name: m.skill_id, path: '' };
+          return `<code>${escapeHtml(info.name)}</code> <small style="color:var(--muted)">${escapeHtml(info.path)}</small>`;
+        }).join('<br>');
+        const strat = strategyLabels[g.strategy] || { en: g.strategy, zh: g.strategy };
+        const stratLabel = `<span data-lang="en">${escapeHtml(strat.en)}</span><span data-lang="zh">${escapeHtml(strat.zh)}</span>`;
+        const confLabel = lang === 'zh' ? '置信度' : 'Confidence';
+        return `<div class="finding-card"><div class="finding-body"><p><strong>${stratLabel}</strong> (${confLabel}: ${escapeHtml(String(g.confidence))})</p><p>${skillItems}</p></div></div>`;
+      }).join('\n');
 
   return `<!DOCTYPE html>
 <html lang="${lang || 'en'}">
