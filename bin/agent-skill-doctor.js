@@ -434,6 +434,35 @@ function buildParticipantIdentityKey(skills) {
   return sha256(skills.map(buildSkillIdentityKey).sort().join('\n'));
 }
 
+// Load .agents/.skill-lock.json for source tracking
+let _skillLockCache = null;
+function loadSkillLock() {
+  if (_skillLockCache !== null) return _skillLockCache;
+  _skillLockCache = {};
+  const lockPath = path.join(os.homedir(), '.agents', '.skill-lock.json');
+  if (!fs.existsSync(lockPath)) return _skillLockCache;
+  try {
+    const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+    for (const [name, info] of Object.entries(lock.skills || {})) {
+      _skillLockCache[name] = info;
+    }
+  } catch {}
+  return _skillLockCache;
+}
+
+// Load .claude-plugin/marketplace.json or plugin.json from skill directory
+function loadClaudePluginInfo(skillPath) {
+  const pluginDir = path.join(skillPath, '.claude-plugin');
+  if (!fs.existsSync(pluginDir)) return null;
+  for (const file of ['marketplace.json', 'plugin.json']) {
+    try {
+      const data = JSON.parse(fs.readFileSync(path.join(pluginDir, file), 'utf8'));
+      return { name: data.name, owner: data.owner?.name, homepage: data.homepage };
+    } catch {}
+  }
+  return null;
+}
+
 function parseSkillCandidate(candidate) {
   const now = nowIso();
   const { file: mainFile, text } = readSkillText(candidate.path);
@@ -454,8 +483,32 @@ function parseSkillCandidate(candidate) {
     hashes: { contentSha256: hashResult.contentSha256, normalizedTextSha256: hashResult.normalizedTextSha256, semanticFingerprint: {} },
     capabilities: [], usage: usageSignalsFor(candidate.path, rootType, agent, modifiedAt, fm.data),
     createdAt: stat.birthtime?.toISOString?.() || null, modifiedAt, lastSeenAt: now, lastUsedAt: null, status: 'active',
-    _scan: { mainFile, text, frontmatterError: fm.error, hasSkillMd: candidate.hasSkillMd, hasReadme: candidate.hasReadme }
+    _scan: { mainFile, text, frontmatterError: fm.error, hasSkillMd: candidate.hasSkillMd, hasReadme: candidate.hasReadme },
+    _sourcePlugin: null, _installedAt: null,
   };
+
+  // Enhance source from external registries when frontmatter has no source
+  if (skill.source.type === 'unknown') {
+    const lock = loadSkillLock();
+    const lockEntry = lock[slug] || lock[name];
+    if (lockEntry) {
+      skill.source = {
+        type: lockEntry.sourceType || 'git',
+        url: lockEntry.sourceUrl || null,
+        subdir: lockEntry.skillPath ? path.dirname(lockEntry.skillPath) : null,
+        ref: null, commit: null,
+      };
+      skill._sourcePlugin = lockEntry.source || null;
+      skill._installedAt = lockEntry.installedAt || null;
+    } else {
+      const pluginInfo = loadClaudePluginInfo(candidate.path);
+      if (pluginInfo) {
+        skill.source = { type: 'plugin', url: pluginInfo.homepage || null, subdir: null, ref: null, commit: null };
+        skill._sourcePlugin = pluginInfo.owner ? `${pluginInfo.owner}/${pluginInfo.name}` : pluginInfo.name;
+      }
+    }
+  }
+
   skill.id = sha256(`${buildSkillIdentityKey(skill)}:${normalizePath(skill.location.path)}`);
   return skill;
 }
@@ -726,10 +779,15 @@ function renderHtml(data, lang, reportPath) {
     const raw = typeof skill.raw_json === 'string' ? JSON.parse(skill.raw_json) : (skill.raw_json || {});
     const sourceUrl = raw.source?.url || skill.source_url || '';
     const rootType = raw.location?.rootType || skill.root_type || '';
-    const agent = raw.location?.agent || skill.agent || '';
+    const plugin = raw._sourcePlugin || '';
 
     if (OFFICIAL_ORGS.test(sourceUrl)) return 'official';
-    if (rootType === 'agent_global') return 'plugin';
+    if (plugin) {
+      if (/superpowers|using-superpowers/i.test(plugin)) return 'plugin';
+      if (/anthropics|openai|github|google/i.test(plugin)) return 'official';
+      return 'thirdParty';
+    }
+    if (rootType === 'agent_global') return 'local';
     if (rootType === 'project_local') return 'standalone';
     if (GITHUB_URL.test(sourceUrl)) return 'thirdParty';
     return 'unknown';
@@ -746,13 +804,15 @@ function renderHtml(data, lang, reportPath) {
       rootType: raw.location?.rootType || s.root_type || '',
       agent: raw.location?.agent || s.agent || '',
       sourceUrl: raw.source?.url || s.source_url || '',
+      sourcePlugin: raw._sourcePlugin || '',
+      installedAt: raw._installedAt || '',
       description: s.description || raw.description || '',
       classification: classifySkill(s),
     };
   });
 
   // Group skills by classification
-  const classOrder = ['official', 'plugin', 'standalone', 'thirdParty', 'unknown'];
+  const classOrder = ['official', 'plugin', 'local', 'standalone', 'thirdParty', 'unknown'];
   const skillsByClass = {};
   for (const cls of classOrder) skillsByClass[cls] = [];
   for (const skill of skills) skillsByClass[skill.classification].push(skill);
@@ -766,7 +826,7 @@ function renderHtml(data, lang, reportPath) {
   }
 
   // Build scan overview HTML
-  const classColors = { official: '#10b981', plugin: '#8b5cf6', standalone: '#3b82f6', thirdParty: '#f59e0b', unknown: '#6b7280' };
+  const classColors = { official: '#10b981', plugin: '#8b5cf6', local: '#0ea5e9', standalone: '#3b82f6', thirdParty: '#f59e0b', unknown: '#6b7280' };
   const rootTypeLabel = (rt) => {
     if (rt === 'central_library') return D('html.rootType.central');
     if (rt === 'agent_global') return D('html.rootType.global');
@@ -785,7 +845,7 @@ function renderHtml(data, lang, reportPath) {
     const typeTag = `<span class="tag">${rootTypeLabel(group.rootType)}</span>`;
     const tableRows = group.skills.map(s => {
       const clsLabel = D(`html.${s.classification}`);
-      const srcCell = s.sourceUrl ? escapeHtml(s.sourceUrl) : clsLabel;
+      const srcCell = s.sourcePlugin ? `<code>${escapeHtml(s.sourcePlugin)}</code>` : (s.sourceUrl ? escapeHtml(s.sourceUrl) : clsLabel);
       return `<tr><td><span class="badge" style="background:${classColors[s.classification]};font-size:0.65rem;padding:0.1rem 0.4rem">${clsLabel}</span></td><td class="skill-name">${escapeHtml(s.name)}</td><td>${srcCell}</td><td>${escapeHtml(s.description || '-').substring(0, 80)}</td></tr>`;
     }).join('');
     const table = `<table class="skill-table"><thead><tr><th>${D('report.type')}</th><th>${D('report.name')}</th><th>${D('html.source')}</th><th>${D('report.description')}</th></tr></thead><tbody>${tableRows}</tbody></table>`;
