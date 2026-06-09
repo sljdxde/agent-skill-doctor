@@ -964,7 +964,10 @@ function renderHtml(data, lang, reportPath) {
     const showZombies = allZombies.slice(0, 15);
     zombieDetail = showZombies.map(z => {
       const score = (z.finding.score || 0).toFixed(2);
-      return `<div style="margin:0.2rem 0;font-size:0.8rem"><span class="badge badge-${z.finding.severity}" style="font-size:0.6rem;padding:0.1rem 0.35rem">${D(`severity.${z.finding.severity}`)}</span> <code>${escapeHtml(z.skill?.slug || z.skill?.name || '')}</code> <span style="color:var(--muted)">(score: ${score})</span></div>`;
+      const desc = z.finding.description || '';
+      const factorsMatch = desc.match(/Factors:\s*(.+?)\.?\s*$/);
+      const factors = factorsMatch ? factorsMatch[1] : '';
+      return `<div style="margin:0.3rem 0;font-size:0.8rem"><span class="badge badge-${z.finding.severity}" style="font-size:0.6rem;padding:0.1rem 0.35rem">${D(`severity.${z.finding.severity}`)}</span> <code>${escapeHtml(z.skill?.slug || z.skill?.name || '')}</code> <span style="color:var(--muted)">(score: ${score})</span>${factors ? `<br><span style="font-size:0.75rem;color:var(--muted);padding-left:1.5rem">${escapeHtml(factors)}</span>` : ''}</div>`;
     }).join('');
     if (zombieTotal > 15) zombieDetail += `<div style="font-size:0.75rem;color:var(--muted)">... ${lang === 'zh' ? '还有' : 'and'} ${zombieTotal - 15} ${lang === 'zh' ? '个' : 'more'}</div>`;
   }
