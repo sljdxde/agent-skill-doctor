@@ -844,12 +844,163 @@ function renderHtml(data, lang, reportPath) {
     return `<span class="legend-item"><span class="dot" style="background:${severityColors[sev]}"></span>${D(`severity.${sev}`)} (${count})</span>`;
   }).join(' ');
 
-  // Per-finding remediation (grouped by type + skill to avoid duplicates)
+  // Remediation path — prioritized roadmap with specific recommendations
   const reportPathForPrompt = reportPath ? reportPath.replace(/\\/g, '/') : '';
   const pathHintEn = reportPathForPrompt ? ` The diagnostic report is at: ${reportPathForPrompt}` : '';
   const pathHintZh = reportPathForPrompt ? ` 诊断报告路径：${reportPathForPrompt}` : '';
 
-  // Group findings by type, then by skill slug to deduplicate
+  // Helper: build skill info map
+  const skillInfoMap = {};
+  for (const s of data.skills) skillInfoMap[s.id] = { name: s.name || s.slug, slug: s.slug, path: s.local_path || '' };
+
+  // Step 1: Conflicts
+  const conflictFindings = data.findings.filter(f => f.type === 'conflict');
+  // Step 2: Version drift + duplicates — build specific keep/remove recommendations
+  const driftFindings = data.findings.filter(f => f.type === 'version_drift');
+  const dupGroups = data.duplicateGroups || [];
+  const dupMembers = data.duplicateGroupMembers || [];
+
+  // For each duplicate group, recommend which to keep
+  const dupRecommendations = dupGroups.map(g => {
+    const members = dupMembers.filter(m => m.group_id === g.id).map(m => ({
+      ...m, ...(skillInfoMap[m.skill_id] || { name: m.skill_id, slug: '', path: '' })
+    }));
+    // Heuristic: prefer agent_global > central_library > project_local; prefer canonical role
+    const rootPriority = { agent_global: 0, central_library: 1, project_local: 2, unknown: 3 };
+    const sorted = members.sort((a, b) => {
+      const skillA = data.skills.find(s => s.id === a.skill_id);
+      const skillB = data.skills.find(s => s.id === b.skill_id);
+      const rtA = rootPriority[skillA?.root_type] ?? 3;
+      const rtB = rootPriority[skillB?.root_type] ?? 3;
+      if (a.role === 'canonical' && b.role !== 'canonical') return -1;
+      if (b.role === 'canonical' && a.role !== 'canonical') return 1;
+      return rtA - rtB;
+    });
+    const keep = sorted[0];
+    const remove = sorted.slice(1);
+    return { group: g, keep, remove, members: sorted };
+  });
+
+  // Step 3: Zombies — group by severity
+  const zombieFindings = data.findings.filter(f => f.type === 'zombie');
+  const zombieBySkill = {};
+  for (const f of zombieFindings) {
+    for (const s of (f.skills || [])) {
+      if (!zombieBySkill[s.slug]) zombieBySkill[s.slug] = { finding: f, skill: s };
+    }
+  }
+  const zombieHigh = Object.values(zombieBySkill).filter(z => ['critical', 'high'].includes(z.finding.severity));
+  const zombieMedium = Object.values(zombieBySkill).filter(z => z.finding.severity === 'medium');
+  const zombieLow = Object.values(zombieBySkill).filter(z => z.finding.severity === 'low');
+
+  // Step 4: Description quality
+  const dqFindings = data.findings.filter(f => f.type === 'description_quality');
+  // Step 5: Risk (informational only)
+  const riskFindings = data.findings.filter(f => f.type === 'risk');
+
+  // Build remediation path HTML
+  const stepStyle = 'padding:0.4rem 0.75rem;border-radius:6px;font-size:0.85rem;margin-bottom:0.5rem';
+
+  let pathHtml = '';
+
+  // Step 1: Conflicts
+  const conflictCount = conflictFindings.length;
+  pathHtml += `<div style="${stepStyle};background:${conflictCount > 0 ? 'var(--c-critical)' : '#10b981'}22;border-left:4px solid ${conflictCount > 0 ? 'var(--c-critical)' : '#10b981'}">
+    <strong>${lang === 'zh' ? '第 1 步：冲突检测' : 'Step 1: Conflict Detection'}</strong> <span class="tag">${conflictCount}</span><br>
+    <span style="color:var(--muted);font-size:0.8rem">${conflictCount === 0 ? (lang === 'zh' ? '无冲突，技能间指令一致。' : 'No conflicts found. Skills have consistent instructions.') : (lang === 'zh' ? '存在冲突指令，需要选择保留哪一方。' : 'Conflicting instructions found. Choose which to keep.')}</span>
+  </div>`;
+
+  // Step 2: Duplicates + Version Drift
+  const dupDriftCount = dupRecommendations.length + driftFindings.length;
+  let dupDriftDetail = '';
+  if (dupDriftCount > 0) {
+    for (const rec of dupRecommendations) {
+      const strat = { exact_duplicate: lang === 'zh' ? '完全重复' : 'Exact duplicate', same_source_duplicate: lang === 'zh' ? '同源重复' : 'Same source', same_name_duplicate: lang === 'zh' ? '同名重复' : 'Same name' }[rec.group.strategy] || rec.group.strategy;
+      dupDriftDetail += `<div style="margin:0.5rem 0;padding:0.5rem;background:var(--bg);border-radius:6px;font-size:0.8rem">
+        <strong>${strat}</strong> (${lang === 'zh' ? '置信度' : 'Confidence'}: ${rec.group.confidence})<br>`;
+      for (const m of rec.members) {
+        const isKeep = m === rec.keep;
+        dupDriftDetail += `<div style="margin:0.2rem 0">${isKeep ? '<span style="color:#10b981;font-weight:700">&#10003; ' + (lang === 'zh' ? '保留' : 'KEEP') + '</span>' : '<span style="color:#ef4444;font-weight:700">&#10007; ' + (lang === 'zh' ? '移除' : 'REMOVE') + '</span>'} <code>${escapeHtml(m.slug || m.name)}</code> <small style="color:var(--muted)">${escapeHtml(m.path)}</small></div>`;
+      }
+      dupDriftDetail += `</div>`;
+    }
+    for (const f of driftFindings) {
+      const driftSkills = (f.skills || []).map(s => ({ ...s, ...(skillInfoMap[s.id] || {}) }));
+      // Prefer agent_global version
+      const sorted = driftSkills.sort((a, b) => {
+        const rtA = a.root_type === 'agent_global' ? 0 : 1;
+        const rtB = b.root_type === 'agent_global' ? 0 : 1;
+        return rtA - rtB;
+      });
+      dupDriftDetail += `<div style="margin:0.5rem 0;padding:0.5rem;background:var(--bg);border-radius:6px;font-size:0.8rem">
+        <strong>${lang === 'zh' ? '版本漂移' : 'Version Drift'}</strong>: <code>${escapeHtml(sorted[0]?.slug || '')}</code><br>`;
+      for (const s of sorted) {
+        const isKeep = s === sorted[0];
+        dupDriftDetail += `<div style="margin:0.2rem 0">${isKeep ? '<span style="color:#10b981;font-weight:700">&#10003; ' + (lang === 'zh' ? '保留' : 'KEEP') + '</span>' : '<span style="color:#ef4444;font-weight:700">&#10007; ' + (lang === 'zh' ? '移除' : 'REMOVE') + '</span>'} <code>${escapeHtml(s.slug || s.name)}</code> <small style="color:var(--muted)">${escapeHtml(s.path || s.local_path || '')}</small></div>`;
+      }
+      dupDriftDetail += `</div>`;
+    }
+  }
+  pathHtml += `<div style="${stepStyle};background:${dupDriftCount > 0 ? '#f59e0b' : '#10b981'}22;border-left:4px solid ${dupDriftCount > 0 ? '#f59e0b' : '#10b981'}">
+    <strong>${lang === 'zh' ? '第 2 步：重复技能 & 版本漂移' : 'Step 2: Duplicates & Version Drift'}</strong> <span class="tag">${dupDriftCount}</span><br>
+    <span style="color:var(--muted);font-size:0.8rem">${dupDriftCount === 0 ? (lang === 'zh' ? '无重复或漂移。' : 'No duplicates or drift found.') : (lang === 'zh' ? '保留推荐版本，移除冗余副本。' : 'Keep recommended versions, remove redundant copies.')}</span>
+    ${dupDriftDetail ? `<details style="margin-top:0.5rem"><summary style="cursor:pointer;font-size:0.8rem;color:var(--muted)">${lang === 'zh' ? '查看详情' : 'View details'}</summary>${dupDriftDetail}</details>` : ''}
+  </div>`;
+
+  // Step 3: Zombies
+  const zombieTotal = zombieFindings.length;
+  let zombieDetail = '';
+  if (zombieTotal > 0) {
+    const showZombies = [...zombieHigh, ...zombieMedium, ...zombieLow].slice(0, 15);
+    zombieDetail = showZombies.map(z => {
+      const desc = z.finding.description || '';
+      const scoreMatch = desc.match(/[\d.]+/);
+      const score = scoreMatch ? scoreMatch[0] : '?';
+      return `<div style="margin:0.2rem 0;font-size:0.8rem"><span class="badge badge-${z.finding.severity}" style="font-size:0.6rem;padding:0.1rem 0.35rem">${D(`severity.${z.finding.severity}`)}</span> <code>${escapeHtml(z.skill?.slug || '')}</code> (score: ${score})</div>`;
+    }).join('');
+    if (zombieTotal > 15) zombieDetail += `<div style="font-size:0.75rem;color:var(--muted)">... ${lang === 'zh' ? '还有' : 'and'} ${zombieTotal - 15} ${lang === 'zh' ? '个' : 'more'}</div>`;
+  }
+  pathHtml += `<div style="${stepStyle};background:${zombieTotal > 0 ? '#f59e0b' : '#10b981'}22;border-left:4px solid ${zombieTotal > 0 ? '#f59e0b' : '#10b981'}">
+    <strong>${lang === 'zh' ? '第 3 步：僵尸技能' : 'Step 3: Zombie Skills'}</strong> <span class="tag">${zombieTotal}</span><br>
+    <span style="color:var(--muted);font-size:0.8rem">${zombieTotal === 0 ? (lang === 'zh' ? '无僵尸技能。' : 'No zombie skills found.') : (lang === 'zh' ? '优先清理高分僵尸，低分的可暂保留。' : 'Prioritize high-score zombies. Low-score ones can be kept for now.')}</span>
+    ${zombieDetail ? `<details style="margin-top:0.5rem"><summary style="cursor:pointer;font-size:0.8rem;color:var(--muted)">${lang === 'zh' ? '查看详情' : 'View details'}</summary>${zombieDetail}</details>` : ''}
+  </div>`;
+
+  // Step 4: Description quality
+  const dqCount = dqFindings.length;
+  pathHtml += `<div style="${stepStyle};background:${dqCount > 0 ? '#a855f7' : '#10b981'}22;border-left:4px solid ${dqCount > 0 ? '#a855f7' : '#10b981'}">
+    <strong>${lang === 'zh' ? '第 4 步：描述质量' : 'Step 4: Description Quality'}</strong> <span class="tag">${dqCount}</span><br>
+    <span style="color:var(--muted);font-size:0.8rem">${dqCount === 0 ? (lang === 'zh' ? '所有技能描述质量合格。' : 'All skill descriptions pass quality check.') : (lang === 'zh' ? '可交给 Agent 自动补充描述，优先级较低。' : 'Can be auto-improved by Agent. Lower priority.')}</span>
+  </div>`;
+
+  // Step 5: Risk (informational)
+  const riskCount = riskFindings.length;
+  pathHtml += `<div style="${stepStyle};background:#6b728022;border-left:4px solid #6b7280">
+    <strong>${lang === 'zh' ? '第 5 步：风险发现（仅供参考）' : 'Step 5: Risk Findings (Informational)'}</strong> <span class="tag">${riskCount}</span><br>
+    <span style="color:var(--muted);font-size:0.8rem">${riskCount === 0 ? (lang === 'zh' ? '无风险发现。' : 'No risk findings.') : (lang === 'zh' ? '风险是技能本身需要的权限，无需修复，仅作标注。' : 'Risks are inherent permissions required by skills. No fix needed, just awareness.')}</span>
+  </div>`;
+
+  // Agent prompt for duplicates/drift cleanup
+  let dupDriftAgentPrompt = '';
+  if (dupDriftCount > 0) {
+    const removeList = [];
+    for (const rec of dupRecommendations) {
+      for (const m of rec.remove) removeList.push(m.path || m.slug || m.name);
+    }
+    for (const f of driftFindings) {
+      const driftSkills = (f.skills || []).sort((a, b) => (a.root_type === 'agent_global' ? 0 : 1) - (b.root_type === 'agent_global' ? 0 : 1));
+      for (const s of driftSkills.slice(1)) removeList.push(s.path || s.local_path || s.slug);
+    }
+    if (removeList.length > 0) {
+      const promptEn = `Please remove the following redundant skill copies:${pathHintEn}\n\nRemove these paths:\n${removeList.map(p => `- ${p}`).join('\n')}\n\nKeep the recommended versions listed in the diagnostic report.`;
+      const promptZh = `请移除以下冗余技能副本：${pathHintZh}\n\n移除以下路径：\n${removeList.map(p => `- ${p}`).join('\n')}\n\n保留诊断报告中推荐的版本。`;
+      dupDriftAgentPrompt = `<div class="prompt-block"><pre class="prompt"><span data-lang="en">${escapeHtml(promptEn)}</span><span data-lang="zh">${escapeHtml(promptZh)}</span></pre><button class="copy-btn" onclick="copyPrompt(this)">${D('fix.copyAgentPrompt')}</button></div>`;
+    }
+  }
+
+  const remediationPathHtml = `<div style="margin-bottom:1.5rem">${pathHtml}</div>${dupDriftAgentPrompt}`;
+
+  // Per-finding detail (grouped by type)
   const findingsByType = {};
   for (const f of data.findings) {
     if (!findingsByType[f.type]) findingsByType[f.type] = {};
@@ -866,30 +1017,25 @@ function renderHtml(data, lang, reportPath) {
     : Object.entries(findingsByType).map(([type, skillMap]) => {
         const allFindings = Object.values(skillMap).flat();
         const count = allFindings.length;
-        // Build skill listing with their findings
         const skillRows = Object.entries(skillMap).map(([slug, findings]) => {
-          const findingItems = findings.map(f =>
-            `<li><span class="badge badge-${f.severity}" style="font-size:0.6rem;padding:0.1rem 0.35rem">${D(`severity.${f.severity}`)}</span> ${translateTitle(f.title)} — ${escapeHtml(f.description || '')}${f.recommendation ? ` <em>(${escapeHtml(f.recommendation)})</em>` : ''} <small>[ID: ${escapeHtml(f.id)}]</small></li>`
-          ).join('');
+          const findingItems = findings.map(f => {
+            const evidenceList = (f.evidence || []).map(e => `<small style="color:var(--muted)">${escapeHtml(e.file || '')}${e.lineStart ? ':' + e.lineStart : ''}</small>`).join(', ');
+            return `<li><span class="badge badge-${f.severity}" style="font-size:0.6rem;padding:0.1rem 0.35rem">${D(`severity.${f.severity}`)}</span> ${translateTitle(f.title)} — ${escapeHtml(f.description || '')} ${evidenceList}</li>`;
+          }).join('');
           return `<div class="card-item"><strong>${escapeHtml(slug)}</strong><ul style="margin:0.25rem 0 0.5rem 1.5rem">${findingItems}</ul></div>`;
         }).join('');
-
-        // Agent prompt for this type+skill group (all findings of this type)
         const agentLines = Object.entries(skillMap).map(([slug, findings]) => {
           const detailLines = findings.map(f =>
-            `  - [${f.severity}] ${f.title}: ${f.description || ''}${f.recommendation ? ` | 建议: ${f.recommendation}` : ''} (ID: ${f.id})`
+            `  - [${f.severity}] ${f.title}: ${f.description || ''}${f.recommendation ? ' | ' + f.recommendation : ''}`
           ).join('\n');
           return `技能: ${slug}\n${detailLines}`;
         }).join('\n\n');
         const agentLinesEn = Object.entries(skillMap).map(([slug, findings]) => {
           const detailLines = findings.map(f =>
-            `  - [${f.severity}] ${f.title}: ${f.description || ''}${f.recommendation ? ` | Recommendation: ${f.recommendation}` : ''} (ID: ${f.id})`
+            `  - [${f.severity}] ${f.title}: ${f.description || ''}${f.recommendation ? ' | ' + f.recommendation : ''}`
           ).join('\n');
           return `Skill: ${slug}\n${detailLines}`;
         }).join('\n\n');
-        const agentPromptEn = `Please fix all ${type} issues:${pathHintEn}\n\n${agentLinesEn}`;
-        const agentPromptZh = `请修复以下 ${type} 类型的所有问题：${pathHintZh}\n\n${agentLines}`;
-
         return `
     <details class="finding-card">
       <summary>
@@ -907,7 +1053,7 @@ function renderHtml(data, lang, reportPath) {
           <div class="fix-ver">
             <h4>${D('fix.agentVersion')}</h4>
             <div class="prompt-block">
-              <pre class="prompt"><span data-lang="en">${escapeHtml(agentPromptEn)}</span><span data-lang="zh">${escapeHtml(agentPromptZh)}</span></pre>
+              <pre class="prompt"><span data-lang="en">${escapeHtml(`Please fix all ${type} issues:${pathHintEn}\n\n${agentLinesEn}`)}</span><span data-lang="zh">${escapeHtml(`请修复以下 ${type} 类型的所有问题：${pathHintZh}\n\n${agentLines}`)}</span></pre>
               <button class="copy-btn" onclick="copyPrompt(this)">${D('fix.copyAgentPrompt')}</button>
             </div>
           </div>
@@ -915,82 +1061,6 @@ function renderHtml(data, lang, reportPath) {
       </div>
     </details>`;
       }).join('\n');
-
-  // By-type remediation guide (complete version with all findings aggregated)
-  const presentTypes = [...new Set(data.findings.map(f => f.type))];
-  const guideTypes = presentTypes.length > 0 ? presentTypes : ['risk', 'zombie', 'duplicate', 'conflict', 'version_drift', 'description_quality', 'scan_warning'];
-  const guideHtml = guideTypes.map(type => {
-    const typeFindings = data.findings.filter(f => f.type === type);
-    const count = typeFindings.length;
-
-    // Build complete skill-finding listing for this type
-    const skillMapForType = {};
-    for (const f of typeFindings) {
-      const slugs = (f.skills || []).map(s => s.slug);
-      if (slugs.length === 0) slugs.push('<unknown>');
-      for (const slug of slugs) {
-        if (!skillMapForType[slug]) skillMapForType[slug] = [];
-        skillMapForType[slug].push(f);
-      }
-    }
-    const skillDetailHtml = Object.entries(skillMapForType).map(([slug, findings]) => {
-      const items = findings.map(f =>
-        `<li><span class="badge badge-${f.severity}" style="font-size:0.6rem;padding:0.1rem 0.35rem">${D(`severity.${f.severity}`)}</span> ${translateTitle(f.title)} <small>[ID: ${escapeHtml(f.id)}]</small></li>`
-      ).join('');
-      return `<div class="card-item"><strong>${escapeHtml(slug)}</strong><ul style="margin:0.25rem 0 0.5rem 1.5rem">${items}</ul></div>`;
-    }).join('');
-
-    // Complete agent prompt with all findings and report path
-    const agentLinesEn = Object.entries(skillMapForType).map(([slug, findings]) => {
-      const detailLines = findings.map(f =>
-        `  - [${f.severity}] ${f.title}: ${f.description || ''}${f.recommendation ? ` | Recommendation: ${f.recommendation}` : ''} (ID: ${f.id})`
-      ).join('\n');
-      return `Skill: ${slug}\n${detailLines}`;
-    }).join('\n\n');
-    const agentLinesZh = Object.entries(skillMapForType).map(([slug, findings]) => {
-      const detailLines = findings.map(f =>
-        `  - [${f.severity}] ${f.title}: ${f.description || ''}${f.recommendation ? ` | 建议: ${f.recommendation}` : ''} (ID: ${f.id})`
-      ).join('\n');
-      return `技能: ${slug}\n${detailLines}`;
-    }).join('\n\n');
-    const fullAgentPromptEn = `Please fix all ${type} issues:${pathHintEn}\n\n${agentLinesEn}`;
-    const fullAgentPromptZh = `请修复以下 ${type} 类型的所有问题：${pathHintZh}\n\n${agentLinesZh}`;
-
-    return `
-    <details class="guide-card">
-      <summary>${D(`guide.${type}.title`)} <span class="tag">${count}</span></summary>
-      <div class="guide-body">
-        <div class="guide-section">
-          <h4>${D('guide.heading.definition')}</h4>
-          <p>${Dn(`guide.${type}.definition`)}</p>
-        </div>
-        <div class="guide-section">
-          <h4>${D('guide.heading.causes')}</h4>
-          <pre class="cause">${D(`guide.${type}.cause`)}</pre>
-        </div>
-        <div class="guide-section">
-          <h4>${D('guide.heading.severity')}</h4>
-          <p>${Dn(`guide.${type}.severity`)}</p>
-        </div>
-        ${count > 0 ? `<div class="guide-section"><h4>${D('html.skillsInvolved')} (${count})</h4>${skillDetailHtml}</div>` : ''}
-        <div class="guide-section">
-          <h4>${D('guide.heading.humanSteps')}</h4>
-          <pre class="steps">${D(`guide.${type}.steps`)}</pre>
-        </div>
-        <div class="guide-section">
-          <h4>${D('guide.heading.agentOps')}</h4>
-          <div class="prompt-block">
-            <pre class="prompt"><span data-lang="en">${escapeHtml(fullAgentPromptEn)}</span><span data-lang="zh">${escapeHtml(fullAgentPromptZh)}</span></pre>
-            <button class="copy-btn" onclick="copyPrompt(this)">${D('fix.copyAgentPrompt')}</button>
-          </div>
-        </div>
-        <div class="guide-section">
-          <h4>${D('guide.heading.agentExample')}</h4>
-          <pre class="example">${D(`guide.${type}.agentExample`)}</pre>
-        </div>
-      </div>
-    </details>`;
-  }).join('\n');
 
   // Findings (risk list)
   const findingsHtml = data.findings.map(f => {
@@ -1013,28 +1083,6 @@ function renderHtml(data, lang, reportPath) {
       </div>
     </details>`;
   }).join('\n');
-
-  // Duplicate groups — show skill names + paths instead of hash IDs
-  const skillInfoMap = {};
-  for (const s of data.skills) skillInfoMap[s.id] = { name: s.name || s.slug || s.id, path: s.local_path || '' };
-  const strategyLabels = {
-    exact_duplicate: { en: 'Exact duplicate', zh: '完全重复' },
-    same_source_duplicate: { en: 'Same source', zh: '同源重复' },
-    same_name_duplicate: { en: 'Same name', zh: '同名重复' },
-  };
-  const dupesHtml = data.duplicateGroups.length === 0
-    ? `<p>${D('report.noDuplicateGroups')}</p>`
-    : data.duplicateGroups.map(g => {
-        const members = (data.duplicateGroupMembers || []).filter(m => m.group_id === g.id);
-        const skillItems = members.map(m => {
-          const info = skillInfoMap[m.skill_id] || { name: m.skill_id, path: '' };
-          return `<code>${escapeHtml(info.name)}</code> <small style="color:var(--muted)">${escapeHtml(info.path)}</small>`;
-        }).join('<br>');
-        const strat = strategyLabels[g.strategy] || { en: g.strategy, zh: g.strategy };
-        const stratLabel = `<span data-lang="en">${escapeHtml(strat.en)}</span><span data-lang="zh">${escapeHtml(strat.zh)}</span>`;
-        const confLabel = lang === 'zh' ? '置信度' : 'Confidence';
-        return `<div class="finding-card"><div class="finding-body"><p><strong>${stratLabel}</strong> (${confLabel}: ${escapeHtml(String(g.confidence))})</p><p>${skillItems}</p></div></div>`;
-      }).join('\n');
 
   return `<!DOCTYPE html>
 <html lang="${lang || 'en'}">
@@ -1104,14 +1152,10 @@ ${scanOverviewHtml}
 </details>
 
 <h2>${D('html.remediationGuide')}</h2>
-<h3 style="font-size:1rem;margin:1rem 0 0.5rem;color:var(--muted)">${D('fix.byType')}</h3>
-${guideHtml}
+${remediationPathHtml}
 
 <h3 style="font-size:1rem;margin:1.5rem 0 0.5rem;color:var(--muted)">${D('fix.perFinding')}</h3>
 ${perFindingHtml}
-
-<h2>${D('report.duplicateGroupsSection')}</h2>
-${dupesHtml}
 
 <footer>${D('html.generatedAt')}: ${new Date().toISOString()}</footer>
 
