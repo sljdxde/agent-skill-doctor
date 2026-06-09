@@ -776,15 +776,16 @@ function renderHtml(data, lang, reportPath) {
   }).filter(Boolean).join(' ');
 
   const sortedRoots = Object.keys(skillsByRoot).sort();
+  const classLabel = (cls) => D(`html.${cls}`);
   const rootCards = sortedRoots.map(root => {
     const group = skillsByRoot[root];
     const agentTag = group.agent ? `<span class="tag">${escapeHtml(t(`agent.${group.agent}`, lang, group.agent))}</span>` : '';
     const typeTag = `<span class="tag">${rootTypeLabel(group.rootType)}</span>`;
     const tableRows = group.skills.map(s =>
-      `<tr><td><span class="badge" style="background:${classColors[s.classification]};font-size:0.65rem;padding:0.1rem 0.4rem">${D(`html.${s.classification}`)}</span></td><td class="skill-name">${escapeHtml(s.name)}</td><td>${escapeHtml(s.sourceUrl || '-')}</td><td>${escapeHtml(s.description || '-').substring(0, 80)}</td></tr>`
+      `<tr><td><span class="badge" style="background:${classColors[s.classification]};font-size:0.65rem;padding:0.1rem 0.4rem">${classLabel(s.classification)}</span></td><td class="skill-name">${escapeHtml(s.name)}</td><td>${escapeHtml(s.sourceUrl || classLabel(s.classification))}</td><td>${escapeHtml(s.description || '-').substring(0, 80)}</td></tr>`
     ).join('');
     const table = `<table class="skill-table"><thead><tr><th>${D('report.type')}</th><th>${D('report.name')}</th><th>${D('html.source')}</th><th>${D('report.description')}</th></tr></thead><tbody>${tableRows}</tbody></table>`;
-    return `<details class="root-card" open><summary><span class="root-path">${escapeHtml(root)}</span>${agentTag}${typeTag}<span class="tag">${group.skills.length}</span></summary><div class="root-body">${table}</div></details>`;
+    return `<details class="root-card"><summary><span class="root-path">${escapeHtml(root)}</span>${agentTag}${typeTag}<span class="tag">${group.skills.length}</span></summary><div class="root-body">${table}</div></details>`;
   }).join('\n');
 
   const scanOverviewHtml = `
@@ -802,7 +803,6 @@ function renderHtml(data, lang, reportPath) {
     { key: 'report.zombieCandidates', descKey: 'dashboard.zombieCandidates.desc', value: data.summary.zombieCandidates, color: '#f59e0b', tooltipTitle: 'tooltip.zombie.title', tooltipText: 'tooltip.zombie.text', filterFn: f => f.type === 'zombie' },
     { key: 'report.descriptionQualityFindings', descKey: 'dashboard.descriptionQualityFindings.desc', value: data.summary.descriptionQualityFindings, color: '#a855f7', tooltipTitle: null, tooltipText: null, filterFn: f => f.type === 'description_quality' },
     { key: 'report.duplicateFindings', descKey: 'dashboard.duplicateFindings.desc', value: data.summary.duplicateFindings, color: '#6366f1', tooltipTitle: 'tooltip.duplicate.title', tooltipText: 'tooltip.duplicate.text', filterFn: f => f.type === 'duplicate' },
-    { key: 'report.duplicateGroups', descKey: 'dashboard.duplicateGroups.desc', value: data.summary.duplicateGroups, color: '#6366f1', tooltipTitle: 'tooltip.duplicate.title', tooltipText: 'tooltip.duplicate.text', filterFn: null },
     { key: 'report.versionDriftFindings', descKey: 'dashboard.versionDriftFindings.desc', value: data.summary.versionDriftFindings, color: '#14b8a6', tooltipTitle: null, tooltipText: null, filterFn: f => f.type === 'version_drift' },
     { key: 'report.conflictFindings', descKey: 'dashboard.conflictFindings.desc', value: data.summary.conflictFindings, color: '#10b981', tooltipTitle: 'tooltip.conflict.title', tooltipText: 'tooltip.conflict.text', filterFn: f => f.type === 'conflict' },
   ];
@@ -1044,7 +1044,7 @@ function renderHtml(data, lang, reportPath) {
 *{box-sizing:border-box;margin:0}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;padding:1.5rem}
 header{display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;flex-wrap:wrap;gap:0.5rem}h1{font-size:1.5rem}h2{font-size:1.2rem;margin:1.5rem 0 0.75rem;padding-bottom:0.5rem;border-bottom:2px solid var(--border)}
 .lang-btn{padding:0.4rem 1rem;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;font-size:0.85rem;color:var(--text)}
-.dashboard{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:0.75rem;margin-bottom:1.5rem}
+.dashboard{display:grid;grid-template-columns:repeat(5,1fr);gap:0.75rem;margin-bottom:1.5rem}@media(max-width:900px){.dashboard{grid-template-columns:repeat(3,1fr)}}@media(max-width:500px){.dashboard{grid-template-columns:repeat(2,1fr)}}
 .stat-card{background:var(--card);border-radius:8px;padding:1rem;box-shadow:0 1px 3px rgba(0,0,0,0.08)}.stat-value{font-size:1.75rem;font-weight:700}.stat-label{font-size:0.8rem;color:var(--muted);margin-top:0.25rem;display:flex;align-items:center;gap:0.3rem}.stat-desc{font-size:0.7rem;color:var(--muted);margin-top:0.35rem;line-height:1.4}
 .card-detail{margin-top:0.5rem;padding-top:0.5rem;border-top:1px solid var(--border);font-size:0.75rem;color:var(--muted)}.card-detail code{font-size:0.7rem;white-space:pre-wrap}
 .card-details{margin-top:0.5rem}.card-details summary{font-size:0.7rem;color:var(--muted);cursor:pointer;padding:0.2rem 0;display:flex}.card-details summary:hover{color:var(--text)}
