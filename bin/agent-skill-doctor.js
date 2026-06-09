@@ -13,7 +13,7 @@ const { DEFAULT_CONFLICT_RULES } = require('../src/doctor/rules');
 const phase2 = require('../src/doctor/phase2');
 const { t, dictionaries } = require('../src/doctor/i18n');
 
-const SKIP_DIRS = new Set(['.git', 'node_modules', 'target', 'dist', 'build', '.cache', '.DS_Store']);
+const SKIP_DIRS = new Set(['.git', 'node_modules', 'target', 'dist', 'build', '.cache', '.tmp', '.DS_Store']);
 
 function sha256(input) {
   return crypto.createHash('sha256').update(input).digest('hex');
@@ -110,26 +110,20 @@ function loadConfig() {
     // Central library
     '~/.skills-manager/skills',
     '~/.skills-manager',
-    // Agent global directories
-    '~/.claude/skills',
-    '~/.codex/skills',
-    '~/.cursor/skills',
-    '~/.opencode/skills',
+    // Agent global skill directories requested by users.
     '~/.agent/skills',
     '~/.agents/skills',
     '~/.agents/skills-core',
-    '~/.windsurf/skills',
-    '~/.aider/skills',
-    '~/.continue/skills',
-    '~/.cody/skills',
-    '~/.copilot/skills',
-    // Project-local directories
-    path.join(process.cwd(), '.claude/skills'),
-    path.join(process.cwd(), '.agents/skills'),
+    '~/.codex/skills',
+    '~/.claude/skills',
+    '~/.cursor/skills',
+    '~/.opencode/skills',
+    // Project-local skill directories
     path.join(process.cwd(), '.agent/skills'),
-    path.join(process.cwd(), '.windsurf/skills'),
-    path.join(process.cwd(), '.cursor/skills'),
+    path.join(process.cwd(), '.agents/skills'),
     path.join(process.cwd(), '.codex/skills'),
+    path.join(process.cwd(), '.claude/skills'),
+    path.join(process.cwd(), '.cursor/skills'),
     path.join(process.cwd(), '.opencode/skills'),
   ].map(expandHome).filter(p => {
     try { return fs.existsSync(p) && fs.statSync(p).isDirectory(); } catch { return false; }

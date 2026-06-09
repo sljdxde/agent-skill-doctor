@@ -54,12 +54,59 @@ function makeFixture() {
   return { temp, home, skills };
 }
 
+function writeSkill(root, rel, name) {
+  const dir = path.join(root, rel);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'SKILL.md'), [
+    '---',
+    `name: ${name}`,
+    `description: Use this skill when testing default root discovery and generate ${name} output.`,
+    '---',
+    `# ${name}`,
+    '',
+    `Generate ${name} output.`,
+  ].join('\n'));
+}
+
 test('main CLI exposes duplicate, risk, conflict, zombie, plan, and apply commands', () => {
   const result = run(['help']);
   assert.equal(result.status, 0);
   for (const command of ['duplicates', 'risks', 'conflicts', 'zombies', 'plan', 'apply']) {
     assert.match(result.stdout, new RegExp(`\\b${command}\\b`));
   }
+});
+
+test('default scan roots include requested agent skill directories', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'asd-roots-'));
+  const home = path.join(temp, 'home');
+  const doctorHome = path.join(temp, 'doctor-home');
+
+  writeSkill(home, path.join('.agent', 'skills', 'agent-skill'), 'Agent Skill');
+  writeSkill(home, path.join('.agents', 'skills-core', 'active', 'agents-skill'), 'Agents Skill');
+  writeSkill(home, path.join('.codex', 'skills', 'codex-global'), 'Codex Global');
+  writeSkill(home, path.join('.claude', 'skills', 'claude-global'), 'Claude Global');
+  writeSkill(home, path.join('.cursor', 'skills', 'cursor-skill'), 'Cursor Skill');
+  writeSkill(home, path.join('.opencode', 'skills', 'opencode-skill'), 'OpenCode Skill');
+
+  const result = run(['scan', '--json'], {
+    env: {
+      AGENT_SKILL_DOCTOR_HOME: doctorHome,
+      HOME: home,
+      USERPROFILE: home,
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const parsed = JSON.parse(result.stdout.slice(result.stdout.indexOf('{')));
+  const slugs = parsed.skills.map(skill => skill.slug).sort();
+  assert.deepEqual(slugs, [
+    'agent-skill',
+    'agents-skill',
+    'claude-global',
+    'codex-global',
+    'cursor-skill',
+    'opencode-skill',
+  ]);
 });
 
 test('diagnose includes duplicate and version drift findings in JSON output', () => {
