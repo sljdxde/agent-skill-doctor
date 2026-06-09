@@ -117,6 +117,10 @@ const en = {
   'tooltip.zombie.formulaText': 'Score = presetCount==0 (0.25) + noAgents (0.20) + noProjects (0.20) + noModification (0.15) + noActivityLog (0.15) + lowDescriptionQuality (0.05). Max = 1.0.',
   'tooltip.conflict.title': 'Conflict Detection Criteria',
   'tooltip.conflict.text': 'Checks if 2+ skills match different alternatives within the same conflict rule. Built-in rules: package manager conflict (npm vs pnpm vs yarn), output format conflict (JSON vs Markdown). Binary detection: conflict exists or not.',
+  'tooltip.descriptionQuality.title': 'Description Quality Criteria',
+  'tooltip.descriptionQuality.text': 'Evaluates skill descriptions on 4 dimensions: length (>=50 chars), risk mention (if skill has risky operations), usage guidance (keywords like "use when", "invoke"), and structure (multi-line with sections). Score 0.0-1.0, triggers if < 0.5.',
+  'tooltip.versionDrift.title': 'Version Drift Detection',
+  'tooltip.versionDrift.text': 'Groups skills by source URL or slug name. If multiple copies exist with different content hashes or source refs (git tag/commit), a drift is reported. Unlike duplicates (identical content), drift means the same skill has diverged versions that need reconciliation.',
 
   // Fix section labels
   'fix.perFinding': 'Per-Risk Fixes',
@@ -383,6 +387,10 @@ const zh = {
   'tooltip.zombie.formulaText': '分数 = 未被预设引用(0.25) + 未安装到Agent(0.20) + 未安装到项目(0.20) + 无近期修改(0.15) + 无活动日志(0.15) + 描述质量低(0.05)。最大值 = 1.0。',
   'tooltip.conflict.title': '冲突检测标准',
   'tooltip.conflict.text': '检查 2+ 个技能是否在同一冲突规则中匹配了不同的备选项。内置规则：包管理器冲突（npm vs pnpm vs yarn）、输出格式冲突（JSON vs Markdown）。二元检测：存在或不存在。',
+  'tooltip.descriptionQuality.title': '描述质量检测标准',
+  'tooltip.descriptionQuality.text': '从 4 个维度评估技能描述：长度（>=50字符）、风险提示（技能含危险操作时是否提及）、使用指导（是否含"使用场景"等关键词）、结构化（多段落组织）。分数 0.0-1.0，低于 0.5 触发。',
+  'tooltip.versionDrift.title': '版本漂移检测标准',
+  'tooltip.versionDrift.text': '按来源 URL 或 slug 名称分组，如果同一技能存在多个副本且内容哈希或版本引用（git tag/commit）不同，则报告漂移。与重复（内容完全相同）不同，漂移意味着同一技能出现了版本分叉，需要对齐。',
 
   // Fix section labels
   'fix.perFinding': '逐项修复',

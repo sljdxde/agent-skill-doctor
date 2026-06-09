@@ -776,14 +776,15 @@ function renderHtml(data, lang, reportPath) {
   }).filter(Boolean).join(' ');
 
   const sortedRoots = Object.keys(skillsByRoot).sort();
-  const classLabel = (cls) => D(`html.${cls}`);
   const rootCards = sortedRoots.map(root => {
     const group = skillsByRoot[root];
     const agentTag = group.agent ? `<span class="tag">${escapeHtml(t(`agent.${group.agent}`, lang, group.agent))}</span>` : '';
     const typeTag = `<span class="tag">${rootTypeLabel(group.rootType)}</span>`;
-    const tableRows = group.skills.map(s =>
-      `<tr><td><span class="badge" style="background:${classColors[s.classification]};font-size:0.65rem;padding:0.1rem 0.4rem">${classLabel(s.classification)}</span></td><td class="skill-name">${escapeHtml(s.name)}</td><td>${escapeHtml(s.sourceUrl || classLabel(s.classification))}</td><td>${escapeHtml(s.description || '-').substring(0, 80)}</td></tr>`
-    ).join('');
+    const tableRows = group.skills.map(s => {
+      const clsLabel = D(`html.${s.classification}`);
+      const srcCell = s.sourceUrl ? escapeHtml(s.sourceUrl) : clsLabel;
+      return `<tr><td><span class="badge" style="background:${classColors[s.classification]};font-size:0.65rem;padding:0.1rem 0.4rem">${clsLabel}</span></td><td class="skill-name">${escapeHtml(s.name)}</td><td>${srcCell}</td><td>${escapeHtml(s.description || '-').substring(0, 80)}</td></tr>`;
+    }).join('');
     const table = `<table class="skill-table"><thead><tr><th>${D('report.type')}</th><th>${D('report.name')}</th><th>${D('html.source')}</th><th>${D('report.description')}</th></tr></thead><tbody>${tableRows}</tbody></table>`;
     return `<details class="root-card"><summary><span class="root-path">${escapeHtml(root)}</span>${agentTag}${typeTag}<span class="tag">${group.skills.length}</span></summary><div class="root-body">${table}</div></details>`;
   }).join('\n');
@@ -801,9 +802,9 @@ function renderHtml(data, lang, reportPath) {
     { key: 'report.totalFindings', descKey: 'dashboard.totalFindings.desc', value: data.summary.totalFindings, color: '#8b5cf6', tooltipTitle: null, tooltipText: null, filterFn: null },
     { key: 'report.riskFindings', descKey: 'dashboard.riskFindings.desc', value: data.summary.riskFindings, color: '#ef4444', tooltipTitle: 'tooltip.risk.title', tooltipText: 'tooltip.risk.text', filterFn: f => f.type === 'risk' },
     { key: 'report.zombieCandidates', descKey: 'dashboard.zombieCandidates.desc', value: data.summary.zombieCandidates, color: '#f59e0b', tooltipTitle: 'tooltip.zombie.title', tooltipText: 'tooltip.zombie.text', filterFn: f => f.type === 'zombie' },
-    { key: 'report.descriptionQualityFindings', descKey: 'dashboard.descriptionQualityFindings.desc', value: data.summary.descriptionQualityFindings, color: '#a855f7', tooltipTitle: null, tooltipText: null, filterFn: f => f.type === 'description_quality' },
+    { key: 'report.descriptionQualityFindings', descKey: 'dashboard.descriptionQualityFindings.desc', value: data.summary.descriptionQualityFindings, color: '#a855f7', tooltipTitle: 'tooltip.descriptionQuality.title', tooltipText: 'tooltip.descriptionQuality.text', filterFn: f => f.type === 'description_quality' },
     { key: 'report.duplicateFindings', descKey: 'dashboard.duplicateFindings.desc', value: data.summary.duplicateFindings, color: '#6366f1', tooltipTitle: 'tooltip.duplicate.title', tooltipText: 'tooltip.duplicate.text', filterFn: f => f.type === 'duplicate' },
-    { key: 'report.versionDriftFindings', descKey: 'dashboard.versionDriftFindings.desc', value: data.summary.versionDriftFindings, color: '#14b8a6', tooltipTitle: null, tooltipText: null, filterFn: f => f.type === 'version_drift' },
+    { key: 'report.versionDriftFindings', descKey: 'dashboard.versionDriftFindings.desc', value: data.summary.versionDriftFindings, color: '#14b8a6', tooltipTitle: 'tooltip.versionDrift.title', tooltipText: 'tooltip.versionDrift.text', filterFn: f => f.type === 'version_drift' },
     { key: 'report.conflictFindings', descKey: 'dashboard.conflictFindings.desc', value: data.summary.conflictFindings, color: '#10b981', tooltipTitle: 'tooltip.conflict.title', tooltipText: 'tooltip.conflict.text', filterFn: f => f.type === 'conflict' },
   ];
 
@@ -822,6 +823,9 @@ function renderHtml(data, lang, reportPath) {
       }
     } else if (c.key === 'report.zombieCandidates') {
       detailSection = `<div class="card-detail"><strong>${D('tooltip.zombie.formula')}</strong><br><code>${Dn('tooltip.zombie.formulaText')}</code></div>`;
+    } else if (c.key === 'report.scanDirs' && skillsByRoot) {
+      const dirList = Object.keys(skillsByRoot).sort().map(r => `<div class="card-item"><code>${escapeHtml(r)}</code> <span class="card-item-skills">(${skillsByRoot[r].skills.length})</span></div>`).join('');
+      detailSection = `<details class="card-details"><summary>${D('html.expandDetails')}</summary><div class="card-detail-list">${dirList}</div></details>`;
     }
     const cardContent = `<div class="stat-value">${c.value}</div><div class="stat-label">${D(c.key)} ${tip}</div><div class="stat-desc">${Dn(c.descKey)}</div>${detailSection}`;
     return `<div class="stat-card" style="border-left:4px solid ${c.color}">${cardContent}</div>`;
