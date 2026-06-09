@@ -31,10 +31,27 @@ function descriptionQuality(skill) {
   return clamp(score, 0, 100);
 }
 
+const OFFICIAL_SOURCE_RE = /github\.com\/(anthropics|openai|github|google-gemini)\//i;
+const PLUGIN_SOURCE_RE = /superpowers|using-superpowers/i;
+
+/**
+ * Determine source protection level for zombie scoring.
+ * Returns: 'official' | 'plugin' | 'thirdParty' | null
+ */
+function sourceProtectionLevel(skill) {
+  const sourceUrl = skill.source?.url || '';
+  const plugin = skill._sourcePlugin || '';
+  if (OFFICIAL_SOURCE_RE.test(sourceUrl)) return 'official';
+  if (plugin && PLUGIN_SOURCE_RE.test(plugin)) return 'plugin';
+  if (plugin) return 'thirdParty';
+  return null;
+}
+
 /**
  * Compute zombie score for a skill (0.0 - 1.0).
  *
- * Early return 0 for pinned / keep / core / system skills.
+ * Early return 0 for pinned / keep / core / system / official-source skills.
+ * Plugin-source skills get 50% score reduction. Third-party get 25% reduction.
  *
  * Score components:
  *   presetCount === 0                  : +0.25
@@ -53,6 +70,10 @@ function computeZombieScore(skill) {
     return 0.0;
   }
 
+  // Official sources are fully protected
+  const protection = sourceProtectionLevel(skill);
+  if (protection === 'official') return 0.0;
+
   let score = 0;
   if ((usage.presetCount || 0) === 0) score += 0.25;
   if (!usage.installedInAgents || usage.installedInAgents.length === 0) score += 0.20;
@@ -60,6 +81,10 @@ function computeZombieScore(skill) {
   if (!usage.hasRecentModification) score += 0.15;
   if (!usage.lastActivityLogAt) score += 0.15;
   if (descriptionQuality(skill) < 40) score += 0.05;
+
+  // Reduce score for plugin/third-party sources
+  if (protection === 'plugin') score *= 0.5;
+  else if (protection === 'thirdParty') score *= 0.75;
 
   return clamp(score, 0, 1);
 }
@@ -112,6 +137,11 @@ function detectZombies(skills) {
     if (!usage.hasRecentModification) { reasons.push('no recent modifications'); factors.push('noModification (+0.15)'); }
     if (!usage.lastActivityLogAt) { reasons.push('no activity log entries'); factors.push('noActivityLog (+0.15)'); }
     if (descriptionQuality(skill) < 40) { reasons.push('poor description quality'); factors.push('lowDescriptionQuality (+0.05)'); }
+
+    // Source protection discount
+    const protection = sourceProtectionLevel(skill);
+    if (protection === 'plugin') factors.push('sourcePlugin (*0.50)');
+    else if (protection === 'thirdParty') factors.push('sourceThirdParty (*0.75)');
 
     const reasonText = reasons.join('; ');
     const factorText = factors.join('; ');
