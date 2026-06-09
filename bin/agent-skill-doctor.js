@@ -1014,8 +1014,8 @@ function renderHtml(data, lang, reportPath) {
       const p = z.skill?.path || z.skill?.local_path || z.skill?.slug || z.skill?.name || '';
       return `- ${p} (score: ${score})`;
     });
-    const promptEn = `Please review the following zombie skills and decide which to remove or archive:${pathHintEn}\n\nZombie skills (sorted by score, higher = more likely zombie):\n${zombieList.join('\n')}\n\nFor each skill:\n- score >= 0.7: recommend removing\n- score 0.4-0.7: review and decide\n- Keep skills you actively use or plan to use`;
-    const promptZh = `请审查以下僵尸技能，决定哪些需要移除或归档：${pathHintZh}\n\n僵尸技能（按评分排序，分数越高越可能是僵尸）：\n${zombieList.join('\n')}\n\n对于每个技能：\n- 评分 >= 0.7：建议移除\n- 评分 0.4-0.7：审查后决定\n- 保留你正在使用或计划使用的技能`;
+    const promptEn = `Please review the following zombie skills and decide which to remove or archive:${pathHintEn}\n\nFor each skill:\n- score >= 0.7: recommend removing\n- score 0.4-0.7: review and decide\n- Keep skills you actively use or plan to use\n\nZombie skills (sorted by score, higher = more likely zombie):\n${zombieList.join('\n')}`;
+    const promptZh = `请审查以下僵尸技能，决定哪些需要移除或归档：${pathHintZh}\n\n对于每个技能：\n- 评分 >= 0.7：建议移除\n- 评分 0.4-0.7：审查后决定\n- 保留你正在使用或计划使用的技能\n\n僵尸技能（按评分排序，分数越高越可能是僵尸）：\n${zombieList.join('\n')}`;
     zombieAgentPrompt = `<h3 style="font-size:0.95rem;margin:1rem 0 0.5rem;color:var(--muted)">${lang === 'zh' ? '僵尸技能清理提示词' : 'Zombie Skills Cleanup Prompt'}</h3><div class="prompt-block"><pre class="prompt"><span data-lang="en">${escapeHtml(promptEn)}</span><span data-lang="zh">${escapeHtml(promptZh)}</span></pre><button class="copy-btn" onclick="copyPrompt(this)">${D('fix.copyAgentPrompt')}</button></div>`;
   }
 
