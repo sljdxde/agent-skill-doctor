@@ -614,7 +614,13 @@ function buildReportData(db, includeIgnored) {
   const duplicateGroups = listDuplicateGroups(db);
   const duplicateGroupMembers = listDuplicateGroupMembers(db);
   const findingSkills = listFindingSkills(db);
+  const scanDirs = [...new Set(skills.map(s => {
+    const raw = typeof s.raw_json === 'string' ? JSON.parse(s.raw_json) : (s.raw_json || {});
+    return raw.location?.root || '';
+  }).filter(Boolean))].length;
+
   const summary = {
+    scanDirs,
     totalSkills: skills.length,
     totalFindings: findings.length,
     duplicateGroups: duplicateGroups.length,
@@ -622,6 +628,8 @@ function buildReportData(db, includeIgnored) {
     riskFindings: findings.filter(f => f.type === 'risk').length,
     conflictFindings: findings.filter(f => f.type === 'conflict').length,
     zombieCandidates: findings.filter(f => f.type === 'zombie').length,
+    descriptionQualityFindings: findings.filter(f => f.type === 'description_quality').length,
+    duplicateFindings: findings.filter(f => f.type === 'duplicate').length,
     ignoredFindings: rows.filter(row => row.ignored).length,
     bySeverity,
     byType,
@@ -785,12 +793,17 @@ function renderHtml(data, lang, reportPath) {
   `;
 
   // Summary cards with collapsible details and tooltips
+  const scanRootCount = skillsByRoot ? Object.keys(skillsByRoot).length : 0;
   const cardDefs = [
-    { key: 'report.totalSkills', descKey: 'dashboard.totalSkills.desc', value: data.summary.totalSkills, color: '#3b82f6', tooltipTitle: null, tooltipText: null, filterFn: null },
+    { key: 'report.scanDirs', descKey: 'dashboard.scanDirs.desc', value: scanRootCount, color: '#0ea5e9', tooltipTitle: null, tooltipText: null, filterFn: null },
+    { key: 'report.scanSkills', descKey: 'dashboard.scanSkills.desc', value: data.summary.totalSkills, color: '#3b82f6', tooltipTitle: null, tooltipText: null, filterFn: null },
     { key: 'report.totalFindings', descKey: 'dashboard.totalFindings.desc', value: data.summary.totalFindings, color: '#8b5cf6', tooltipTitle: null, tooltipText: null, filterFn: null },
-    { key: 'report.duplicateGroups', descKey: 'dashboard.duplicateGroups.desc', value: data.summary.duplicateGroups, color: '#6366f1', tooltipTitle: 'tooltip.duplicate.title', tooltipText: 'tooltip.duplicate.text', filterFn: null },
     { key: 'report.riskFindings', descKey: 'dashboard.riskFindings.desc', value: data.summary.riskFindings, color: '#ef4444', tooltipTitle: 'tooltip.risk.title', tooltipText: 'tooltip.risk.text', filterFn: f => f.type === 'risk' },
     { key: 'report.zombieCandidates', descKey: 'dashboard.zombieCandidates.desc', value: data.summary.zombieCandidates, color: '#f59e0b', tooltipTitle: 'tooltip.zombie.title', tooltipText: 'tooltip.zombie.text', filterFn: f => f.type === 'zombie' },
+    { key: 'report.descriptionQualityFindings', descKey: 'dashboard.descriptionQualityFindings.desc', value: data.summary.descriptionQualityFindings, color: '#a855f7', tooltipTitle: null, tooltipText: null, filterFn: f => f.type === 'description_quality' },
+    { key: 'report.duplicateFindings', descKey: 'dashboard.duplicateFindings.desc', value: data.summary.duplicateFindings, color: '#6366f1', tooltipTitle: 'tooltip.duplicate.title', tooltipText: 'tooltip.duplicate.text', filterFn: f => f.type === 'duplicate' },
+    { key: 'report.duplicateGroups', descKey: 'dashboard.duplicateGroups.desc', value: data.summary.duplicateGroups, color: '#6366f1', tooltipTitle: 'tooltip.duplicate.title', tooltipText: 'tooltip.duplicate.text', filterFn: null },
+    { key: 'report.versionDriftFindings', descKey: 'dashboard.versionDriftFindings.desc', value: data.summary.versionDriftFindings, color: '#14b8a6', tooltipTitle: null, tooltipText: null, filterFn: f => f.type === 'version_drift' },
     { key: 'report.conflictFindings', descKey: 'dashboard.conflictFindings.desc', value: data.summary.conflictFindings, color: '#10b981', tooltipTitle: 'tooltip.conflict.title', tooltipText: 'tooltip.conflict.text', filterFn: f => f.type === 'conflict' },
   ];
 
@@ -1050,13 +1063,13 @@ footer{text-align:center;color:var(--muted);font-size:0.8rem;margin-top:2rem;pad
   <button class="lang-btn" onclick="toggleLang()"><span data-lang="en">中文</span><span data-lang="zh">EN</span></button>
 </header>
 
-<h2>${D('html.scanOverview')}</h2>
-${scanOverviewHtml}
-
 <h2>${D('html.dashboard')}</h2>
 <div class="dashboard">${summaryCards}</div>
 <div class="severity-bar">${severityBar}</div>
 <div class="legend">${severityLegend}</div>
+
+<h2>${D('html.scanOverview')}</h2>
+${scanOverviewHtml}
 
 <details class="info-card">
   <summary>${D('severity.explanation.title')}</summary>
