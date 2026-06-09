@@ -31,7 +31,7 @@ function expandHome(p) {
 }
 
 function normalizePath(p) {
-  return path.resolve(expandHome(p)).replaceAll('\\\\', '/');
+  return path.resolve(expandHome(p)).replace(/\\/g, '/');
 }
 
 function ensureDir(dir) {
@@ -107,14 +107,28 @@ function loadConfig() {
   ensureDir(home);
   ensureDir(path.join(home, 'reports'));
   const candidates = [
+    // Central library
     '~/.skills-manager/skills',
     '~/.skills-manager',
+    // Agent global directories
     '~/.claude/skills',
     '~/.codex/skills',
     '~/.cursor/skills',
     '~/.opencode/skills',
+    '~/.agent/skills',
+    '~/.windsurf/skills',
+    '~/.aider/skills',
+    '~/.continue/skills',
+    '~/.cody/skills',
+    '~/.copilot/skills',
+    // Project-local directories
     path.join(process.cwd(), '.claude/skills'),
     path.join(process.cwd(), '.agents/skills'),
+    path.join(process.cwd(), '.agent/skills'),
+    path.join(process.cwd(), '.windsurf/skills'),
+    path.join(process.cwd(), '.cursor/skills'),
+    path.join(process.cwd(), '.codex/skills'),
+    path.join(process.cwd(), '.opencode/skills'),
   ].map(expandHome).filter(p => {
     try { return fs.existsSync(p) && fs.statSync(p).isDirectory(); } catch { return false; }
   });
@@ -334,17 +348,27 @@ function kindForFile(rel) {
 }
 
 function rootTypeFor(p) {
-  if (p.includes('/.skills-manager/')) return 'central_library';
-  if (p.includes('/.claude/') || p.includes('/.codex/') || p.includes('/.cursor/') || p.includes('/.opencode/')) return 'agent_global';
-  if (p.includes('/.agents/')) return 'project_local';
+  const n = p.replace(/\\/g, '/');
+  if (n.includes('/.skills-manager/')) return 'central_library';
+  if (n.includes('/.claude/') || n.includes('/.codex/') || n.includes('/.cursor/') || n.includes('/.opencode/') ||
+      n.includes('/.agent/') || n.includes('/.windsurf/') || n.includes('/.aider/') ||
+      n.includes('/.continue/') || n.includes('/.cody/') || n.includes('/.copilot/')) return 'agent_global';
+  if (n.includes('/.agents/')) return 'project_local';
   return 'unknown';
 }
 
 function inferAgent(p) {
-  if (p.includes('/.claude/')) return 'claude';
-  if (p.includes('/.codex/')) return 'codex';
-  if (p.includes('/.cursor/')) return 'cursor';
-  if (p.includes('/.opencode/')) return 'opencode';
+  const n = p.replace(/\\/g, '/');
+  if (n.includes('/.claude/')) return 'claude';
+  if (n.includes('/.codex/')) return 'codex';
+  if (n.includes('/.cursor/')) return 'cursor';
+  if (n.includes('/.opencode/')) return 'opencode';
+  if (n.includes('/.windsurf/')) return 'windsurf';
+  if (n.includes('/.aider/')) return 'aider';
+  if (n.includes('/.continue/')) return 'continue';
+  if (n.includes('/.cody/')) return 'cody';
+  if (n.includes('/.copilot/')) return 'copilot';
+  if (n.includes('/.agent/')) return 'agent';
   return null;
 }
 
@@ -714,28 +738,42 @@ function renderHtml(data, lang, reportPath) {
   for (const cls of classOrder) skillsByClass[cls] = [];
   for (const skill of skills) skillsByClass[skill.classification].push(skill);
 
-  // Unique scanned roots
-  const scannedRoots = [...new Set(skills.map(s => s.root).filter(Boolean))];
+  // Group skills by root directory
+  const skillsByRoot = {};
+  for (const skill of skills) {
+    const root = skill.root || '(unknown root)';
+    if (!skillsByRoot[root]) skillsByRoot[root] = { rootType: skill.rootType, agent: skill.agent, skills: [] };
+    skillsByRoot[root].skills.push(skill);
+  }
 
   // Build scan overview HTML
   const classColors = { official: '#10b981', plugin: '#8b5cf6', standalone: '#3b82f6', thirdParty: '#f59e0b', unknown: '#6b7280' };
+  const rootTypeLabel = (rt) => {
+    if (rt === 'central_library') return D('html.rootType.central');
+    if (rt === 'agent_global') return D('html.rootType.global');
+    if (rt === 'project_local') return D('html.rootType.project');
+    return rt || '-';
+  };
   const classCounts = classOrder.map(cls => {
     const count = skillsByClass[cls].length;
     return count > 0 ? `<span class="legend-item"><span class="dot" style="background:${classColors[cls]}"></span>${D(`html.${cls}`)} (${count})</span>` : '';
   }).filter(Boolean).join(' ');
 
-  const skillRows = skills.length === 0
-    ? `<p>${D('html.noSkills')}</p>`
-    : `<table class="skill-table"><thead><tr><th>${D('report.type')}</th><th>${D('html.source')}</th><th>${D('html.agent')}</th><th>${D('html.path')}</th></tr></thead><tbody>` +
-      classOrder.flatMap(cls => skillsByClass[cls].map(s =>
-        `<tr><td><span class="badge" style="background:${classColors[cls]};font-size:0.65rem;padding:0.1rem 0.4rem">${D(`html.${cls}`)}</span></td><td>${escapeHtml(s.sourceUrl || '-')}</td><td>${escapeHtml(s.agent || '-')}</td><td><code>${escapeHtml(s.path)}</code></td></tr>`
-      )).join('') +
-      '</tbody></table>';
+  const sortedRoots = Object.keys(skillsByRoot).sort();
+  const rootCards = sortedRoots.map(root => {
+    const group = skillsByRoot[root];
+    const agentTag = group.agent ? `<span class="tag">${escapeHtml(t(`agent.${group.agent}`, lang, group.agent))}</span>` : '';
+    const typeTag = `<span class="tag">${rootTypeLabel(group.rootType)}</span>`;
+    const tableRows = group.skills.map(s =>
+      `<tr><td><span class="badge" style="background:${classColors[s.classification]};font-size:0.65rem;padding:0.1rem 0.4rem">${D(`html.${s.classification}`)}</span></td><td class="skill-name">${escapeHtml(s.name)}</td><td>${escapeHtml(s.sourceUrl || '-')}</td><td>${escapeHtml(s.description || '-').substring(0, 80)}</td></tr>`
+    ).join('');
+    const table = `<table class="skill-table"><thead><tr><th>${D('report.type')}</th><th>${D('report.name')}</th><th>${D('html.source')}</th><th>${D('report.description')}</th></tr></thead><tbody>${tableRows}</tbody></table>`;
+    return `<details class="root-card" open><summary><span class="root-path">${escapeHtml(root)}</span>${agentTag}${typeTag}<span class="tag">${group.skills.length}</span></summary><div class="root-body">${table}</div></details>`;
+  }).join('\n');
 
   const scanOverviewHtml = `
-    <div class="scan-roots"><strong>${D('html.scannedDirs')}:</strong> ${scannedRoots.map(r => `<code>${escapeHtml(r)}</code>`).join(', ') || '-'}</div>
     <div class="scan-class-legend">${classCounts}</div>
-    <details class="info-card"><summary>${D('html.skillList')} (${skills.length})</summary><div class="info-body">${skillRows}</div></details>
+    ${rootCards || `<p>${D('html.noSkills')}</p>`}
   `;
 
   // Summary cards with collapsible details and tooltips
@@ -992,9 +1030,9 @@ header{display:flex;justify-content:space-between;align-items:center;margin-bott
 .tip-wrap{position:relative;display:inline-flex;align-items:center}.tip-icon{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:var(--border);color:var(--muted);font-size:0.65rem;font-weight:700;cursor:help;margin-left:0.25rem}
 .tip-box{display:none;position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:0.75rem;font-size:0.8rem;width:320px;z-index:10;box-shadow:0 4px 12px rgba(0,0,0,0.12);line-height:1.5;white-space:normal}
 .tip-wrap:hover .tip-box{display:block}
-.scan-roots{margin-bottom:0.75rem;font-size:0.85rem}.scan-roots code{background:var(--border);padding:0.1rem 0.4rem;border-radius:3px;font-size:0.8rem}
 .scan-class-legend{display:flex;flex-wrap:wrap;gap:0.75rem;font-size:0.8rem;color:var(--muted);margin-bottom:0.75rem}
-.skill-table{width:100%;border-collapse:collapse;font-size:0.8rem;margin-top:0.5rem}th,td{padding:0.4rem 0.6rem;border:1px solid var(--border);text-align:left}th{background:var(--card);font-weight:600;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.3px}.skill-table code{font-size:0.75rem;word-break:break-all}
+.root-card{background:var(--card);border:1px solid var(--border);border-radius:8px;margin-bottom:0.5rem;overflow:hidden}.root-card summary{padding:0.6rem 1rem;cursor:pointer;font-size:0.85rem;display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap}.root-card summary:hover{background:var(--bg)}.root-card .root-path{font-family:monospace;font-size:0.8rem;font-weight:600;word-break:break-all}.root-card .tag{font-size:0.65rem}.root-body{padding:0 1rem 0.75rem;border-top:1px solid var(--border)}.root-empty{padding:0.6rem 1rem;font-size:0.8rem;color:var(--muted);font-style:italic}
+.skill-table{width:100%;border-collapse:collapse;font-size:0.8rem;margin-top:0.5rem}th,td{padding:0.4rem 0.6rem;border:1px solid var(--border);text-align:left}th{background:var(--bg);font-weight:600;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.3px}.skill-table code{font-size:0.75rem;word-break:break-all}.skill-table .skill-name{font-weight:600}
 footer{text-align:center;color:var(--muted);font-size:0.8rem;margin-top:2rem;padding-top:1rem;border-top:1px solid var(--border)}
 </style>
 </head>
