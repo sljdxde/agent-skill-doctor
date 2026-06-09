@@ -881,7 +881,7 @@ function renderHtml(data, lang, reportPath) {
     return { group: g, keep, remove, members: sorted };
   });
 
-  // Step 3: Zombies — group by severity
+  // Step 3: Zombies — sorted by score descending
   const zombieFindings = data.findings.filter(f => f.type === 'zombie');
   const zombieBySkill = {};
   for (const f of zombieFindings) {
@@ -889,9 +889,10 @@ function renderHtml(data, lang, reportPath) {
       if (!zombieBySkill[s.slug]) zombieBySkill[s.slug] = { finding: f, skill: s };
     }
   }
-  const zombieHigh = Object.values(zombieBySkill).filter(z => ['critical', 'high'].includes(z.finding.severity));
-  const zombieMedium = Object.values(zombieBySkill).filter(z => z.finding.severity === 'medium');
-  const zombieLow = Object.values(zombieBySkill).filter(z => z.finding.severity === 'low');
+  const allZombies = Object.values(zombieBySkill).sort((a, b) => (b.finding.score || 0) - (a.finding.score || 0));
+  const zombieHigh = allZombies.filter(z => ['critical', 'high'].includes(z.finding.severity));
+  const zombieMedium = allZombies.filter(z => z.finding.severity === 'medium');
+  const zombieLow = allZombies.filter(z => z.finding.severity === 'low');
 
   // Step 4: Description quality
   const dqFindings = data.findings.filter(f => f.type === 'description_quality');
@@ -947,16 +948,14 @@ function renderHtml(data, lang, reportPath) {
     ${dupDriftDetail ? `<details style="margin-top:0.5rem"><summary style="cursor:pointer;font-size:0.8rem;color:var(--muted)">${lang === 'zh' ? '查看详情' : 'View details'}</summary>${dupDriftDetail}</details>` : ''}
   </div>`;
 
-  // Step 3: Zombies
+  // Step 3: Zombies (sorted by score desc)
   const zombieTotal = zombieFindings.length;
   let zombieDetail = '';
   if (zombieTotal > 0) {
-    const showZombies = [...zombieHigh, ...zombieMedium, ...zombieLow].slice(0, 15);
+    const showZombies = allZombies.slice(0, 15);
     zombieDetail = showZombies.map(z => {
-      const desc = z.finding.description || '';
-      const scoreMatch = desc.match(/[\d.]+/);
-      const score = scoreMatch ? scoreMatch[0] : '?';
-      return `<div style="margin:0.2rem 0;font-size:0.8rem"><span class="badge badge-${z.finding.severity}" style="font-size:0.6rem;padding:0.1rem 0.35rem">${D(`severity.${z.finding.severity}`)}</span> <code>${escapeHtml(z.skill?.slug || '')}</code> (score: ${score})</div>`;
+      const score = (z.finding.score || 0).toFixed(2);
+      return `<div style="margin:0.2rem 0;font-size:0.8rem"><span class="badge badge-${z.finding.severity}" style="font-size:0.6rem;padding:0.1rem 0.35rem">${D(`severity.${z.finding.severity}`)}</span> <code>${escapeHtml(z.skill?.slug || z.skill?.name || '')}</code> <span style="color:var(--muted)">(score: ${score})</span></div>`;
     }).join('');
     if (zombieTotal > 15) zombieDetail += `<div style="font-size:0.75rem;color:var(--muted)">... ${lang === 'zh' ? '还有' : 'and'} ${zombieTotal - 15} ${lang === 'zh' ? '个' : 'more'}</div>`;
   }
@@ -994,11 +993,24 @@ function renderHtml(data, lang, reportPath) {
     if (removeList.length > 0) {
       const promptEn = `Please remove the following redundant skill copies:${pathHintEn}\n\nRemove these paths:\n${removeList.map(p => `- ${p}`).join('\n')}\n\nKeep the recommended versions listed in the diagnostic report.`;
       const promptZh = `请移除以下冗余技能副本：${pathHintZh}\n\n移除以下路径：\n${removeList.map(p => `- ${p}`).join('\n')}\n\n保留诊断报告中推荐的版本。`;
-      dupDriftAgentPrompt = `<div class="prompt-block"><pre class="prompt"><span data-lang="en">${escapeHtml(promptEn)}</span><span data-lang="zh">${escapeHtml(promptZh)}</span></pre><button class="copy-btn" onclick="copyPrompt(this)">${D('fix.copyAgentPrompt')}</button></div>`;
+      dupDriftAgentPrompt = `<h3 style="font-size:0.95rem;margin:1rem 0 0.5rem;color:var(--muted)">${lang === 'zh' ? '重复/漂移清理提示词' : 'Duplicates/Drift Cleanup Prompt'}</h3><div class="prompt-block"><pre class="prompt"><span data-lang="en">${escapeHtml(promptEn)}</span><span data-lang="zh">${escapeHtml(promptZh)}</span></pre><button class="copy-btn" onclick="copyPrompt(this)">${D('fix.copyAgentPrompt')}</button></div>`;
     }
   }
 
-  const remediationPathHtml = `<div style="margin-bottom:1.5rem">${pathHtml}</div>${dupDriftAgentPrompt}`;
+  // Agent prompt for zombie cleanup (sorted by score desc)
+  let zombieAgentPrompt = '';
+  if (zombieTotal > 0) {
+    const zombieList = allZombies.map(z => {
+      const score = (z.finding.score || 0).toFixed(2);
+      const p = z.skill?.path || z.skill?.local_path || z.skill?.slug || z.skill?.name || '';
+      return `- ${p} (score: ${score})`;
+    });
+    const promptEn = `Please review the following zombie skills and decide which to remove or archive:${pathHintEn}\n\nZombie skills (sorted by score, higher = more likely zombie):\n${zombieList.join('\n')}\n\nFor each skill:\n- score >= 0.7: recommend removing\n- score 0.4-0.7: review and decide\n- Keep skills you actively use or plan to use`;
+    const promptZh = `请审查以下僵尸技能，决定哪些需要移除或归档：${pathHintZh}\n\n僵尸技能（按评分排序，分数越高越可能是僵尸）：\n${zombieList.join('\n')}\n\n对于每个技能：\n- 评分 >= 0.7：建议移除\n- 评分 0.4-0.7：审查后决定\n- 保留你正在使用或计划使用的技能`;
+    zombieAgentPrompt = `<h3 style="font-size:0.95rem;margin:1rem 0 0.5rem;color:var(--muted)">${lang === 'zh' ? '僵尸技能清理提示词' : 'Zombie Skills Cleanup Prompt'}</h3><div class="prompt-block"><pre class="prompt"><span data-lang="en">${escapeHtml(promptEn)}</span><span data-lang="zh">${escapeHtml(promptZh)}</span></pre><button class="copy-btn" onclick="copyPrompt(this)">${D('fix.copyAgentPrompt')}</button></div>`;
+  }
+
+  const remediationPathHtml = `<div style="margin-bottom:1.5rem">${pathHtml}</div>${dupDriftAgentPrompt}${zombieAgentPrompt}`;
 
   // Per-finding detail (grouped by type)
   const findingsByType = {};
@@ -1017,10 +1029,15 @@ function renderHtml(data, lang, reportPath) {
     : Object.entries(findingsByType).map(([type, skillMap]) => {
         const allFindings = Object.values(skillMap).flat();
         const count = allFindings.length;
-        const skillRows = Object.entries(skillMap).map(([slug, findings]) => {
+        // Sort zombie entries by score descending
+        const sortedEntries = type === 'zombie'
+          ? Object.entries(skillMap).sort((a, b) => ((b[1][0]?.score || 0) - (a[1][0]?.score || 0)))
+          : Object.entries(skillMap);
+        const skillRows = sortedEntries.map(([slug, findings]) => {
           const findingItems = findings.map(f => {
             const evidenceList = (f.evidence || []).map(e => `<small style="color:var(--muted)">${escapeHtml(e.file || '')}${e.lineStart ? ':' + e.lineStart : ''}</small>`).join(', ');
-            return `<li><span class="badge badge-${f.severity}" style="font-size:0.6rem;padding:0.1rem 0.35rem">${D(`severity.${f.severity}`)}</span> ${translateTitle(f.title)} — ${escapeHtml(f.description || '')} ${evidenceList}</li>`;
+            const scoreTag = type === 'zombie' && f.score != null ? ` <span style="color:var(--muted);font-size:0.75rem">(score: ${Number(f.score).toFixed(2)})</span>` : '';
+            return `<li><span class="badge badge-${f.severity}" style="font-size:0.6rem;padding:0.1rem 0.35rem">${D(`severity.${f.severity}`)}</span>${scoreTag} ${translateTitle(f.title)} — ${escapeHtml(f.description || '')} ${evidenceList}</li>`;
           }).join('');
           return `<div class="card-item"><strong>${escapeHtml(slug)}</strong><ul style="margin:0.25rem 0 0.5rem 1.5rem">${findingItems}</ul></div>`;
         }).join('');
