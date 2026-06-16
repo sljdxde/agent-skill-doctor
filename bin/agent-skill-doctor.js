@@ -13,7 +13,18 @@ const { DEFAULT_CONFLICT_RULES } = require('../src/doctor/rules');
 const phase2 = require('../src/doctor/phase2');
 const { t, dictionaries } = require('../src/doctor/i18n');
 
-const SKIP_DIRS = new Set(['.git', 'node_modules', 'target', 'dist', 'build', '.cache', '.tmp', '.DS_Store']);
+const SKIP_DIRS = new Set([
+  '.git', 'node_modules', 'target', 'dist', 'build', '.tmp', '.DS_Store',
+  // Agent-specific non-skill directories
+  'sessions', 'backups', 'shell-snapshots', 'session-env',
+  'debug', 'file-history', 'paste-cache', 'plans',
+  'daemon', 'ide', 'hooks', 'logs', 'log', 'errors',
+  'archived_sessions', 'worktrees', 'sqlite',
+  'accounts', 'memories', 'rules', 'docs', 'vendor_imports',
+  'process_manager', 'node_repl', 'ambient-suggestions',
+  'automations', 'codexmate', 'computer-use', 'computer-use-turn-ended',
+  'browser', 'pets',
+]);
 
 function sha256(input) {
   return crypto.createHash('sha256').update(input).digest('hex');
@@ -32,6 +43,10 @@ function expandHome(p) {
 
 function normalizePath(p) {
   return path.resolve(expandHome(p)).replace(/\\/g, '/');
+}
+
+function isDir(p) {
+  try { return fs.existsSync(p) && fs.statSync(p).isDirectory(); } catch { return false; }
 }
 
 function ensureDir(dir) {
@@ -106,34 +121,76 @@ function loadConfig() {
   const home = doctorHome();
   ensureDir(home);
   ensureDir(path.join(home, 'reports'));
-  const candidates = [
-    // Central library
-    '~/.skills-manager/skills',
+
+  // Agent root directories (global)
+  const agentRoots = [
     '~/.skills-manager',
-    // Agent global skill directories requested by users.
-    '~/.agent/skills',
-    '~/.agents/skills',
-    '~/.agents/skills-core',
-    '~/.codex/skills',
-    '~/.claude/skills',
-    '~/.cursor/skills',
-    '~/.opencode/skills',
-    // Project-local skill directories
-    path.join(process.cwd(), '.agent/skills'),
-    path.join(process.cwd(), '.agents/skills'),
-    path.join(process.cwd(), '.codex/skills'),
-    path.join(process.cwd(), '.claude/skills'),
-    path.join(process.cwd(), '.cursor/skills'),
-    path.join(process.cwd(), '.opencode/skills'),
-  ].map(expandHome).filter(p => {
-    try { return fs.existsSync(p) && fs.statSync(p).isDirectory(); } catch { return false; }
-  });
+    '~/.agent',
+    '~/.agents',
+    '~/.codex',
+    '~/.claude',
+    '~/.cursor',
+    '~/.opencode',
+    '~/.windsurf',
+    '~/.aider',
+    '~/.continue',
+    '~/.cody',
+    '~/.copilot',
+  ];
+
+  // Project-local agent directories
+  const projectAgents = [
+    '.agent',
+    '.agents',
+    '.codex',
+    '.claude',
+    '.cursor',
+    '.opencode',
+    '.windsurf',
+    '.aider',
+    '.continue',
+    '.cody',
+    '.copilot',
+  ];
+
+  const candidates = [];
+
+  // For each agent root, discover skill directories automatically
+  for (const root of agentRoots) {
+    const expanded = expandHome(root);
+    if (!isDir(expanded)) continue;
+
+    // Add the root itself (for ~/.skills-manager pattern)
+    candidates.push(expanded);
+
+    // Add skills/ subdirectory if exists
+    const skillsDir = path.join(expanded, 'skills');
+    if (isDir(skillsDir)) candidates.push(skillsDir);
+
+    // Add skills-core/ subdirectory if exists (for ~/.agents/skills-core)
+    const skillsCoreDir = path.join(expanded, 'skills-core');
+    if (isDir(skillsCoreDir)) candidates.push(skillsCoreDir);
+
+    // Add plugins/ subdirectory if exists (for plugin cache/marketplace)
+    const pluginsDir = path.join(expanded, 'plugins');
+    if (isDir(pluginsDir)) candidates.push(pluginsDir);
+  }
+
+  // For project-local directories
+  for (const agent of projectAgents) {
+    const expanded = path.join(process.cwd(), agent);
+    if (!isDir(expanded)) continue;
+
+    const skillsDir = path.join(expanded, 'skills');
+    if (isDir(skillsDir)) candidates.push(skillsDir);
+  }
+
   return {
     home,
     dbPath: path.join(home, 'doctor.db'),
     reportsDir: path.join(home, 'reports'),
     scan: { maxDepth: 6 },
-    roots: candidates,
+    roots: [...new Set(candidates)], // deduplicate
   };
 }
 
