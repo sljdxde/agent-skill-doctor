@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-07-07
+
+### Added
+- Added `governance` registry readiness diagnostics for owner, version, lifecycle status, release label, and trusted source metadata.
+- Added `agent-skill-doctor governance --json` for focused governance findings.
+- Added governance findings to diagnose summaries, Markdown reports, JSON reports, and HTML dashboard cards.
+- Added targeted `fix --type governance` guide text in English and Chinese.
+
+### Documentation
+- Documented governance checks and CLI examples in English and Chinese READMEs.
+
 ## [0.1.0] - 2026-06-08
 
 ### Added
