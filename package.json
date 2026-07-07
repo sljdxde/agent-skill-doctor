@@ -10,6 +10,7 @@
     "./conflict": "./src/doctor/conflict.js",
     "./zombie": "./src/doctor/zombie.js",
     "./risk": "./src/doctor/risk-lite.js",
+    "./governance": "./src/doctor/governance.js",
     "./rules": "./src/doctor/rules.js",
     "./i18n": "./src/doctor/i18n.js"
   },

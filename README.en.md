@@ -23,6 +23,7 @@ Agent Skill Doctor diagnoses local AI Agent Skills: duplicate installs, version 
 - `conflict`: contradictory instructions, such as `npm install` vs `pnpm install`.
 - `duplicate`: exact, same-source, or same-name duplicate skills.
 - `version_drift`: the same skill installed with different refs or content.
+- `governance`: registry / team-sharing readiness, such as missing owner, version, lifecycle status, stable/dev label, or trusted source.
 - `zombie`: low-activity or possibly abandoned skills.
 - `description_quality`: missing trigger, input/output, risk notes, or too-short descriptions.
 - `scan_warning`: missing `SKILL.md` or malformed frontmatter.
@@ -67,7 +68,7 @@ Use agent-skill-doctor to diagnose my local Agent Skills:
 2. Generate an HTML report: npx agent-skill-doctor report --format html --lang en
 3. Review conflicts, duplicates, version drift, zombie skills, and risks.
 4. Do not delete files yet. First produce a repair plan and explain which skills would change.
-5. Give recommendations for risk, duplicate, version_drift, zombie, and description_quality findings.
+5. Give recommendations for risk, duplicate, version_drift, governance, zombie, and description_quality findings.
 ```
 
 The agent can use `fix` to generate targeted repair prompts:
@@ -174,6 +175,7 @@ agent-skill-doctor diagnose --json
 agent-skill-doctor risks --json
 agent-skill-doctor conflicts --json
 agent-skill-doctor duplicates --json
+agent-skill-doctor governance --json
 agent-skill-doctor zombies --json
 
 # Generate reports
@@ -185,6 +187,7 @@ agent-skill-doctor report --format html --lang en
 agent-skill-doctor fix --lang en
 agent-skill-doctor fix --type duplicate --lang en
 agent-skill-doctor fix --type version_drift --lang en
+agent-skill-doctor fix --type governance --lang en
 
 # Fail CI by severity
 agent-skill-doctor diagnose --ci --fail-on high

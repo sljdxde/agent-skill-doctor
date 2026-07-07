@@ -6,6 +6,7 @@ const zombie = require('./zombie');
 const riskLite = require('./risk-lite');
 const rules = require('./rules');
 const i18n = require('./i18n');
+const governance = require('./governance');
 
 module.exports = {
   // Phase 2 - Duplicate and drift detection
@@ -34,6 +35,12 @@ module.exports = {
   getMatchedPatternId: riskLite.getMatchedPatternId,
   loadJsonRules: riskLite.loadJsonRules,
   scanSkillForRisks: riskLite.scanSkillForRisks,
+
+  // Governance readiness
+  detectGovernanceFindings: governance.detectGovernanceFindings,
+  hasGovernanceLabel: governance.hasGovernanceLabel,
+  hasTrustedSource: governance.hasTrustedSource,
+  lifecycleStatus: governance.lifecycleStatus,
 
   // Rules and utilities
   DEFAULT_RISK_RULES: rules.DEFAULT_RISK_RULES,

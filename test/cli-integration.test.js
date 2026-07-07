@@ -68,10 +68,10 @@ function writeSkill(root, rel, name) {
   ].join('\n'));
 }
 
-test('main CLI exposes duplicate, risk, conflict, zombie, plan, and apply commands', () => {
+test('main CLI exposes duplicate, risk, conflict, zombie, governance, plan, and apply commands', () => {
   const result = run(['help']);
   assert.equal(result.status, 0);
-  for (const command of ['duplicates', 'risks', 'conflicts', 'zombies', 'plan', 'apply']) {
+  for (const command of ['duplicates', 'risks', 'conflicts', 'zombies', 'governance', 'plan', 'apply']) {
     assert.match(result.stdout, new RegExp(`\\b${command}\\b`));
   }
 });
@@ -118,8 +118,26 @@ test('diagnose includes duplicate and version drift findings in JSON output', ()
   const parsed = JSON.parse(result.stdout.slice(result.stdout.indexOf('{')));
   assert.ok(parsed.summary.duplicateGroups >= 1, JSON.stringify(parsed.summary));
   assert.ok(parsed.summary.versionDriftFindings >= 1, JSON.stringify(parsed.summary));
+  assert.ok(parsed.summary.governanceFindings >= 1, JSON.stringify(parsed.summary));
   assert.ok(parsed.findings.some(f => f.type === 'duplicate'));
   assert.ok(parsed.findings.some(f => f.type === 'version_drift'));
+  assert.ok(parsed.findings.some(f => f.type === 'governance'));
+});
+
+test('governance command lists registry readiness findings', () => {
+  const fixture = makeFixture();
+  const diagnosed = run(['diagnose', '--root', fixture.skills, '--json'], {
+    env: { AGENT_SKILL_DOCTOR_HOME: fixture.home },
+  });
+  assert.equal(diagnosed.status, 0, diagnosed.stderr);
+
+  const result = run(['governance', '--json'], {
+    env: { AGENT_SKILL_DOCTOR_HOME: fixture.home },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const findings = JSON.parse(result.stdout.slice(result.stdout.indexOf('[')));
+  assert.ok(findings.length > 0);
+  assert.ok(findings.every(f => f.type === 'governance'));
 });
 
 test('report JSON includes required relationship and plan containers', () => {

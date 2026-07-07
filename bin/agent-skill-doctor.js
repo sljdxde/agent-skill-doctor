@@ -11,6 +11,7 @@ const { detectConflicts } = require('../src/doctor/conflict');
 const { detectZombies } = require('../src/doctor/zombie');
 const { DEFAULT_CONFLICT_RULES } = require('../src/doctor/rules');
 const phase2 = require('../src/doctor/phase2');
+const { detectGovernanceFindings } = require('../src/doctor/governance');
 const { t, dictionaries } = require('../src/doctor/i18n');
 
 const SKIP_DIRS = new Set([
@@ -748,6 +749,12 @@ function runPhase2Analysis(db, skills) {
   return { groups, drifts };
 }
 
+function runGovernanceAnalysis(db, skills) {
+  const findings = detectGovernanceFindings(skills);
+  for (const finding of findings) upsertFinding(db, finding, finding.links || []);
+  return findings;
+}
+
 function recordRun(db, run) {
   db.prepare('INSERT INTO doctor_runs (id, started_at, finished_at, status, skill_count, finding_count, duplicate_group_count, high_count, critical_count, config_json, summary_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(run.id, run.startedAt, run.finishedAt, run.status, run.skillCount, run.findingCount, 0, run.highCount, run.criticalCount, JSON.stringify(run.config || {}), JSON.stringify(run.summary || {}));
 }
@@ -784,6 +791,7 @@ function buildReportData(db, includeIgnored) {
     riskFindings: findings.filter(f => f.type === 'risk').length,
     conflictFindings: findings.filter(f => f.type === 'conflict').length,
     zombieCandidates: findings.filter(f => f.type === 'zombie').length,
+    governanceFindings: findings.filter(f => f.type === 'governance').length,
     descriptionQualityFindings: findings.filter(f => f.type === 'description_quality').length,
     duplicateFindings: findings.filter(f => f.type === 'duplicate').length,
     ignoredFindings: rows.filter(row => row.ignored).length,
@@ -806,6 +814,7 @@ function renderMarkdown(data, lang) {
     `- ${L('report.versionDriftFindings')}: ${data.summary.versionDriftFindings}`,
     `- ${L('report.conflictFindings')}: ${data.summary.conflictFindings}`,
     `- ${L('report.riskFindings')}: ${data.summary.riskFindings}`,
+    `- ${L('report.governanceFindings')}: ${data.summary.governanceFindings}`,
     `- ${L('report.zombieCandidates')}: ${data.summary.zombieCandidates}`,
     `- ${L('report.ignoredFindings')}: ${data.summary.ignoredFindings}`,
     `- ${L('report.bySeverity')}: ${JSON.stringify(data.summary.bySeverity)}`,
@@ -965,6 +974,7 @@ function renderHtml(data, lang, reportPath) {
     { key: 'report.totalFindings', descKey: 'dashboard.totalFindings.desc', value: data.summary.totalFindings, color: '#8b5cf6', tooltipTitle: null, tooltipText: null, filterFn: null },
     // Actionable — high priority (red)
     { key: 'report.conflictFindings', descKey: 'dashboard.conflictFindings.desc', value: data.summary.conflictFindings, color: '#ef4444', tooltipTitle: 'tooltip.conflict.title', tooltipText: 'tooltip.conflict.text', filterFn: f => f.type === 'conflict' },
+    { key: 'report.governanceFindings', descKey: 'dashboard.governanceFindings.desc', value: data.summary.governanceFindings, color: '#0f766e', tooltipTitle: 'tooltip.governance.title', tooltipText: 'tooltip.governance.text', filterFn: f => f.type === 'governance' },
     // Actionable — medium priority (orange)
     { key: 'report.zombieCandidates', descKey: 'dashboard.zombieCandidates.desc', value: data.summary.zombieCandidates, color: '#f59e0b', tooltipTitle: 'tooltip.zombie.title', tooltipText: 'tooltip.zombie.text', filterFn: f => f.type === 'zombie' },
     // Actionable — lower priority (yellow)
@@ -1424,6 +1434,7 @@ Commands:
   risks [--json] [--ci] [--fail-on high|critical|medium]
   conflicts [--json] [--ci] [--fail-on high|critical|medium]
   zombies [--json] [--ci] [--fail-on high|critical|medium]
+  governance [--json] [--ci] [--fail-on high|critical|medium]
   plan [--safe|--normal|--aggressive] [--json] [--output <path>]
   apply <plan.json> --dry-run [--json]
   ignore <finding-id> [--reason <text>]
@@ -1431,7 +1442,7 @@ Commands:
   ignored list
   help
 
-Fix types: risk, zombie, duplicate, conflict, version_drift, description_quality, scan_warning
+Fix types: risk, zombie, duplicate, conflict, version_drift, governance, description_quality, scan_warning
 Fix severity: critical, high, medium, low, info
 `);
 }
@@ -1530,6 +1541,9 @@ function runDiagnose(args) {
   const zombieFindings = detectZombies(skills);
   for (const f of zombieFindings) upsertFinding(db, f, f.links || []);
 
+  // Governance readiness detection
+  const governanceFindings = runGovernanceAnalysis(db, skills);
+
   // Duplicate and version drift detection
   const phase2Result = runPhase2Analysis(db, skills);
 
@@ -1539,6 +1553,7 @@ function runDiagnose(args) {
     riskFindings: riskFindings.length,
     conflictFindings: conflictFindings.length,
     zombieCandidates: zombieFindings.length,
+    governanceFindings: governanceFindings.length,
     duplicateGroups: phase2Result.groups.length,
     versionDriftFindings: phase2Result.drifts.length,
   };
@@ -1551,6 +1566,7 @@ function runDiagnose(args) {
     console.log(t('cli.riskFindings', lang, summary.riskFindings));
     console.log(t('cli.conflictFindings', lang, summary.conflictFindings));
     console.log(t('cli.zombieCandidates', lang, summary.zombieCandidates));
+    console.log(t('cli.governanceFindings', lang, summary.governanceFindings));
   }
 
   if (args.ci) {
@@ -1741,7 +1757,7 @@ function runIgnored(args) {
 
 function runGuide(args) {
   const lang = args.lang || 'en';
-  const types = ['risk', 'zombie', 'duplicate', 'conflict', 'version_drift', 'description_quality', 'scan_warning'];
+  const types = ['risk', 'zombie', 'duplicate', 'conflict', 'version_drift', 'governance', 'description_quality', 'scan_warning'];
   const lines = [];
   for (const type of types) {
     lines.push(`=== ${t(`guide.${type}.title`, lang)} ===`);
@@ -1778,7 +1794,7 @@ function runFix(args) {
   }
 
   // Validate type
-  const validTypes = ['risk', 'zombie', 'duplicate', 'conflict', 'version_drift', 'description_quality', 'scan_warning'];
+  const validTypes = ['risk', 'zombie', 'duplicate', 'conflict', 'version_drift', 'governance', 'description_quality', 'scan_warning'];
   if (typeFilter && !validTypes.includes(typeFilter)) {
     console.error(`${lang === 'zh' ? '无效的问题类型' : 'Invalid type'}: ${typeFilter}. ${lang === 'zh' ? '可选值' : 'Valid values'}: ${validTypes.join(', ')}`);
     process.exit(3);
@@ -1876,6 +1892,7 @@ function main() {
     if (command === 'risks') return runFindingsByType(args, 'risk');
     if (command === 'conflicts') return runFindingsByType(args, 'conflict');
     if (command === 'zombies') return runFindingsByType(args, 'zombie');
+    if (command === 'governance') return runFindingsByType(args, 'governance');
     if (command === 'plan') return runPlan(args);
     if (command === 'apply') return runApply(args);
     if (command === 'ignore') return runIgnore(args, true);
