@@ -7,6 +7,7 @@ const riskLite = require('./risk-lite');
 const rules = require('./rules');
 const i18n = require('./i18n');
 const governance = require('./governance');
+const freshness = require('./freshness');
 
 module.exports = {
   // Phase 2 - Duplicate and drift detection
@@ -41,6 +42,12 @@ module.exports = {
   hasGovernanceLabel: governance.hasGovernanceLabel,
   hasTrustedSource: governance.hasTrustedSource,
   lifecycleStatus: governance.lifecycleStatus,
+
+  // Freshness / update detection
+  detectFreshnessFindings: freshness.detectFreshnessFindings,
+  compareVersions: freshness.compareVersions,
+  parseVersion: freshness.parseVersion,
+  isGitUrl: freshness.isGitUrl,
 
   // Rules and utilities
   DEFAULT_RISK_RULES: rules.DEFAULT_RISK_RULES,

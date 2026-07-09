@@ -9,6 +9,7 @@ const en = {
   'cli.conflictFindings': 'Conflict findings: %s',
   'cli.zombieCandidates': 'Zombie candidates: %s',
   'cli.governanceFindings': 'Governance findings: %s',
+  'cli.freshnessFindings': 'Freshness findings: %s',
   'cli.reportWritten': 'Report written: %s',
   'cli.noFindings': 'No %s findings.',
   'cli.noDuplicateGroups': 'No duplicate groups. Run: agent-skill-doctor diagnose',
@@ -34,6 +35,7 @@ const en = {
   'report.conflictFindings': 'Conflict findings',
   'report.zombieCandidates': 'Zombie candidates',
   'report.governanceFindings': 'Governance readiness',
+  'report.freshnessFindings': 'Update available',
   'report.descriptionQualityFindings': 'Description issues',
   'report.duplicateFindings': 'Duplicate findings',
   'report.ignoredFindings': 'Ignored',
@@ -149,6 +151,7 @@ const en = {
   'type.duplicate': 'Duplicate',
   'type.version_drift': 'Version Drift',
   'type.governance': 'Governance',
+  'type.freshness': 'Update Available',
   'type.description_quality': 'Description Quality',
   'type.scan_warning': 'Scan Warning',
 
@@ -207,6 +210,15 @@ const en = {
   'guide.governance.prompt': 'Please improve governance metadata for the skill at "%s". Add owner, version, lifecycle, label, and trusted source fields where missing.',
   'guide.governance.agentExample': 'Agent interaction example:\nUser: Please prepare this skill for registry sharing\nAgent: I\'ll inspect the skill metadata, add missing owner/version/lifecycle fields, and keep content changes minimal...',
 
+  'guide.freshness.title': 'Update Available',
+  'guide.freshness.definition': 'Freshness findings indicate that a skill may be outdated relative to its upstream source and an update might be available.',
+  'guide.freshness.cause': 'Common causes:\n• Skill has no source URL, so updates cannot be tracked\n• Skill has a source URL but is not pinned to a specific ref or commit\n• Skill was last modified a long time ago and may be behind upstream\n• A newer version of the same skill exists in another location\n• The pinned commit no longer matches the upstream HEAD (requires --check-upstream)',
+  'guide.freshness.severity': 'Severity explanation:\n• Medium: No source URL at all, or confirmed behind upstream (commit mismatch)\n• Low: Unpinned source, stale by age, or lower version than a sibling',
+  'guide.freshness.meaning': 'The skill may not be at the latest version available from its upstream source. Updating ensures you have the latest fixes and features.',
+  'guide.freshness.steps': 'Fix steps:\n1. If the skill has no source URL, add one to the frontmatter (e.g. a git repository URL)\n2. If the source is unpinned, pin it to a specific tag, branch, or commit hash\n3. If the skill is stale by age, check the upstream repository for newer releases\n4. If a sibling has a newer version, update this copy to match\n5. Run with --check-upstream to verify against the actual upstream commit\n6. After updating, re-run diagnosis to confirm the freshness finding is resolved',
+  'guide.freshness.prompt': 'Please check whether the skill at "%s" is outdated. Add a source URL if missing, pin to a specific ref or commit, and update from the upstream repository if a newer version is available.',
+  'guide.freshness.agentExample': 'Agent interaction example:\nUser: Please check if my skills need updating\nAgent: I\'ll check each skill\'s source URL and version, compare with upstream, and update any that are behind...',
+
   'guide.description_quality.title': 'Description Quality',
   'guide.description_quality.definition': 'Description quality issues indicate that the skill\'s SKILL.md file is missing necessary information or has unclear descriptions.',
   'guide.description_quality.cause': 'Common causes:\n• Skill author didn\'t provide complete description\n• Description is too brief, missing key information\n• No trigger conditions specified\n• No input/output documented\n• Known risks not recorded',
@@ -253,6 +265,7 @@ const en = {
   'dashboard.descriptionQualityFindings.desc': 'Documentation quality, low priority',
   'dashboard.duplicateFindings.desc': 'Findings related to duplicate skill content',
   'dashboard.versionDriftFindings.desc': 'Skills with outdated versions compared to source',
+  'dashboard.freshnessFindings.desc': 'Skills that may need updating from upstream',
   'dashboard.scanDirs.desc': 'Directories scanned for skills',
   'dashboard.scanSkills.desc': 'Total skills discovered',
 
@@ -297,6 +310,7 @@ const zh = {
   'cli.conflictFindings': '冲突发现: %s',
   'cli.zombieCandidates': '僵尸技能: %s',
   'cli.governanceFindings': '治理发现: %s',
+  'cli.freshnessFindings': '更新检测: %s',
   'cli.reportWritten': '报告已写入: %s',
   'cli.noFindings': '没有 %s 类型的发现。',
   'cli.noDuplicateGroups': '没有重复组。运行: agent-skill-doctor diagnose',
@@ -433,6 +447,7 @@ const zh = {
   'type.duplicate': '重复',
   'type.version_drift': '版本漂移',
   'type.governance': '治理',
+  'type.freshness': '待更新',
   'type.description_quality': '描述质量',
   'type.scan_warning': '扫描警告',
 
@@ -490,6 +505,15 @@ const zh = {
   'guide.governance.prompt': '请完善技能 "%s" 的治理元数据。补齐缺失的 owner、version、lifecycle、label 和 trusted source 字段。',
   'guide.governance.agentExample': 'Agent 交互示例：\n用户：请把这个技能整理到可以团队共享\nAgent：我会检查技能元数据，补齐缺失的 owner/version/lifecycle 字段，并尽量保持内容改动最小...',
 
+  'guide.freshness.title': '待更新',
+  'guide.freshness.definition': '更新检测发现表示技能可能落后于上游来源，有新版本可用。',
+  'guide.freshness.cause': '常见成因：\n• 技能没有来源 URL，无法跟踪更新\n• 技能有来源 URL 但未锁定到具体的 ref 或 commit\n• 技能很久未修改，可能落后于上游\n• 另一个位置存在同一技能的更新版本\n• 锁定的 commit 与上游 HEAD 不一致（需要 --check-upstream）',
+  'guide.freshness.severity': '严重程度说明：\n• Medium（中）：完全没有来源 URL，或已确认落后于上游（commit 不匹配）\n• Low（低）：来源未锁定、按年龄判定过期、或版本低于同源副本',
+  'guide.freshness.meaning': '该技能可能不是上游来源的最新版本。更新可确保你拥有最新的修复和功能。',
+  'guide.freshness.steps': '修复步骤：\n1. 如果技能没有来源 URL，在 frontmatter 中添加（如 git 仓库地址）\n2. 如果来源未锁定，锁定到具体的 tag、branch 或 commit hash\n3. 如果技能过期，检查上游仓库是否有新版本\n4. 如果同源副本版本更高，将此副本更新到相同版本\n5. 使用 --check-upstream 验证与上游 commit 的一致性\n6. 更新后重新运行诊断，确认更新检测发现已消除',
+  'guide.freshness.prompt': '请检查技能 "%s" 是否需要更新。如果缺少来源 URL 则添加，如果未锁定则锁定到具体 ref 或 commit，如果上游有新版本则更新。',
+  'guide.freshness.agentExample': 'Agent 交互示例：\n用户：请检查我的技能是否需要更新\nAgent：我会检查每个技能的来源 URL 和版本，与上游对比，更新落后的技能...',
+
   'guide.description_quality.title': '描述质量',
   'guide.description_quality.definition': '描述质量问题是指标技能的 SKILL.md 文件缺少必要信息或描述不清晰。',
   'guide.description_quality.cause': '常见成因：\n• 技能作者未提供完整描述\n• 描述过于简短，缺少关键信息\n• 未说明触发条件\n• 未说明输入输出\n• 未记录已知风险',
@@ -536,6 +560,7 @@ const zh = {
   'dashboard.descriptionQualityFindings.desc': '文档质量问题，低优先级',
   'dashboard.duplicateFindings.desc': '与重复内容相关的发现数',
   'dashboard.versionDriftFindings.desc': '与源版本不一致的技能数',
+  'dashboard.freshnessFindings.desc': '可能需要从上游更新的技能数',
   'dashboard.scanDirs.desc': '已扫描的目录数',
   'dashboard.scanSkills.desc': '发现的技能总数',
 

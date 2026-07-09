@@ -12,6 +12,7 @@ const { detectZombies } = require('../src/doctor/zombie');
 const { DEFAULT_CONFLICT_RULES } = require('../src/doctor/rules');
 const phase2 = require('../src/doctor/phase2');
 const { detectGovernanceFindings } = require('../src/doctor/governance');
+const { detectFreshnessFindings } = require('../src/doctor/freshness');
 const { t, dictionaries } = require('../src/doctor/i18n');
 
 const SKIP_DIRS = new Set([
@@ -755,6 +756,12 @@ function runGovernanceAnalysis(db, skills) {
   return findings;
 }
 
+function runFreshnessAnalysis(db, skills, options = {}) {
+  const findings = detectFreshnessFindings(skills, options);
+  for (const finding of findings) upsertFinding(db, finding, finding.links || []);
+  return findings;
+}
+
 function recordRun(db, run) {
   db.prepare('INSERT INTO doctor_runs (id, started_at, finished_at, status, skill_count, finding_count, duplicate_group_count, high_count, critical_count, config_json, summary_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(run.id, run.startedAt, run.finishedAt, run.status, run.skillCount, run.findingCount, 0, run.highCount, run.criticalCount, JSON.stringify(run.config || {}), JSON.stringify(run.summary || {}));
 }
@@ -792,6 +799,7 @@ function buildReportData(db, includeIgnored) {
     conflictFindings: findings.filter(f => f.type === 'conflict').length,
     zombieCandidates: findings.filter(f => f.type === 'zombie').length,
     governanceFindings: findings.filter(f => f.type === 'governance').length,
+    freshnessFindings: findings.filter(f => f.type === 'freshness').length,
     descriptionQualityFindings: findings.filter(f => f.type === 'description_quality').length,
     duplicateFindings: findings.filter(f => f.type === 'duplicate').length,
     ignoredFindings: rows.filter(row => row.ignored).length,
@@ -815,6 +823,7 @@ function renderMarkdown(data, lang) {
     `- ${L('report.conflictFindings')}: ${data.summary.conflictFindings}`,
     `- ${L('report.riskFindings')}: ${data.summary.riskFindings}`,
     `- ${L('report.governanceFindings')}: ${data.summary.governanceFindings}`,
+    `- ${L('report.freshnessFindings')}: ${data.summary.freshnessFindings}`,
     `- ${L('report.zombieCandidates')}: ${data.summary.zombieCandidates}`,
     `- ${L('report.ignoredFindings')}: ${data.summary.ignoredFindings}`,
     `- ${L('report.bySeverity')}: ${JSON.stringify(data.summary.bySeverity)}`,
@@ -980,6 +989,8 @@ function renderHtml(data, lang, reportPath) {
     // Actionable — lower priority (yellow)
     { key: 'report.duplicateFindings', descKey: 'dashboard.duplicateFindings.desc', value: data.summary.duplicateFindings, color: '#eab308', tooltipTitle: 'tooltip.duplicate.title', tooltipText: 'tooltip.duplicate.text', filterFn: f => f.type === 'duplicate' },
     { key: 'report.versionDriftFindings', descKey: 'dashboard.versionDriftFindings.desc', value: data.summary.versionDriftFindings, color: '#84cc16', tooltipTitle: 'tooltip.versionDrift.title', tooltipText: 'tooltip.versionDrift.text', filterFn: f => f.type === 'version_drift' },
+    // Actionable — update detection (cyan)
+    { key: 'report.freshnessFindings', descKey: 'dashboard.freshnessFindings.desc', value: data.summary.freshnessFindings, color: '#06b6d4', tooltipTitle: 'tooltip.freshness.title', tooltipText: 'tooltip.freshness.text', filterFn: f => f.type === 'freshness' },
     // Informational — not actionable (gray, with ? tooltip)
     { key: 'report.riskFindings', descKey: 'dashboard.riskFindings.desc', value: data.summary.riskFindings, color: '#6b7280', tooltipTitle: 'tooltip.risk.title', tooltipText: 'tooltip.risk.text', filterFn: f => f.type === 'risk', informational: true },
     { key: 'report.descriptionQualityFindings', descKey: 'dashboard.descriptionQualityFindings.desc', value: data.summary.descriptionQualityFindings, color: '#6b7280', tooltipTitle: 'tooltip.descriptionQuality.title', tooltipText: 'tooltip.descriptionQuality.text', filterFn: f => f.type === 'description_quality', informational: true },
@@ -1072,15 +1083,33 @@ function renderHtml(data, lang, reportPath) {
   const zombieMedium = allZombies.filter(z => z.finding.severity === 'medium');
   const zombieLow = allZombies.filter(z => z.finding.severity === 'low');
 
-  // Step 4: Description quality
-  const dqFindings = data.findings.filter(f => f.type === 'description_quality');
-  // Step 5: Risk (informational only)
-  const riskFindings = data.findings.filter(f => f.type === 'risk');
-
   // Build remediation path HTML
   const stepStyle = 'padding:0.4rem 0.75rem;border-radius:6px;font-size:0.85rem;margin-bottom:0.5rem';
 
   let pathHtml = '';
+
+  // Step 4: Freshness / update detection
+  const freshnessFindings = data.findings.filter(f => f.type === 'freshness');
+  const freshCount = freshnessFindings.length;
+  let freshDetail = '';
+  if (freshCount > 0) {
+    const showFresh = freshnessFindings.slice(0, 15);
+    freshDetail = showFresh.map(f => {
+      const skills = (f.skills || []).map(s => escapeHtml(s.slug || s.name)).join(', ');
+      return `<div style="margin:0.3rem 0;font-size:0.8rem"><span class="badge badge-${f.severity}" style="font-size:0.6rem;padding:0.1rem 0.35rem">${D(`severity.${f.severity}`)}</span> <code>${escapeHtml(f.ruleId)}</code> ${escapeHtml(f.title)} <span class="card-item-skills">${skills ? `[${skills}]` : ''}</span></div>`;
+    }).join('');
+    if (freshCount > 15) freshDetail += `<div style="font-size:0.75rem;color:var(--muted)">... ${lang === 'zh' ? '还有' : 'and'} ${freshCount - 15} ${lang === 'zh' ? '个' : 'more'}</div>`;
+  }
+  pathHtml += `<div style="${stepStyle};background:${freshCount > 0 ? '#06b6d4' : '#10b981'}22;border-left:4px solid ${freshCount > 0 ? '#06b6d4' : '#10b981'}">
+    <strong>${lang === 'zh' ? '第 4 步：更新检测' : 'Step 4: Update Detection'}</strong> <span class="tag">${freshCount}</span><br>
+    <span style="color:var(--muted);font-size:0.8rem">${freshCount === 0 ? (lang === 'zh' ? '所有技能均为最新。' : 'All skills are up to date.') : (lang === 'zh' ? '检查是否有技能需要从上游更新。使用 --check-upstream 可联网验证。' : 'Check if any skills need updating from upstream. Use --check-upstream for online verification.')}</span>
+    ${freshDetail ? `<details style="margin-top:0.5rem"><summary style="cursor:pointer;font-size:0.8rem;color:var(--muted)">${lang === 'zh' ? '查看详情' : 'View details'}</summary>${freshDetail}</details>` : ''}
+  </div>`;
+
+  // Step 5: Description quality
+  const dqFindings = data.findings.filter(f => f.type === 'description_quality');
+  // Step 6: Risk (informational only)
+  const riskFindings = data.findings.filter(f => f.type === 'risk');
 
   // Step 1: Conflicts
   const conflictCount = conflictFindings.length;
@@ -1149,14 +1178,14 @@ function renderHtml(data, lang, reportPath) {
   // Step 4: Description quality
   const dqCount = dqFindings.length;
   pathHtml += `<div style="${stepStyle};background:${dqCount > 0 ? '#a855f7' : '#10b981'}22;border-left:4px solid ${dqCount > 0 ? '#a855f7' : '#10b981'}">
-    <strong>${lang === 'zh' ? '第 4 步：描述质量' : 'Step 4: Description Quality'}</strong> <span class="tag">${dqCount}</span><br>
+    <strong>${lang === 'zh' ? '第 5 步：描述质量' : 'Step 5: Description Quality'}</strong> <span class="tag">${dqCount}</span><br>
     <span style="color:var(--muted);font-size:0.8rem">${dqCount === 0 ? (lang === 'zh' ? '所有技能描述质量合格。' : 'All skill descriptions pass quality check.') : (lang === 'zh' ? '可交给 Agent 自动补充描述，优先级较低。' : 'Can be auto-improved by Agent. Lower priority.')}</span>
   </div>`;
 
   // Step 5: Risk (informational)
   const riskCount = riskFindings.length;
   pathHtml += `<div style="${stepStyle};background:#6b728022;border-left:4px solid #6b7280">
-    <strong>${lang === 'zh' ? '第 5 步：风险发现（仅供参考）' : 'Step 5: Risk Findings (Informational)'}</strong> <span class="tag">${riskCount}</span><br>
+    <strong>${lang === 'zh' ? '第 6 步：风险发现（仅供参考）' : 'Step 6: Risk Findings (Informational)'}</strong> <span class="tag">${riskCount}</span><br>
     <span style="color:var(--muted);font-size:0.8rem">${riskCount === 0 ? (lang === 'zh' ? '无风险发现。' : 'No risk findings.') : (lang === 'zh' ? '风险是技能本身需要的权限，无需修复，仅作标注。' : 'Risks are inherent permissions required by skills. No fix needed, just awareness.')}</span>
   </div>`;
 
@@ -1426,7 +1455,7 @@ function usage() {
 
 Commands:
   scan [--full] [--rebuild-index] [--root <path>] [--json] [--lang en|zh]
-  diagnose [--json] [--ci] [--fail-on high|critical|medium] [--rules <dir>] [--include-ignored] [--lang en|zh]
+  diagnose [--json] [--ci] [--fail-on high|critical|medium] [--rules <dir>] [--include-ignored] [--check-upstream] [--lang en|zh]
   report [--format md|json|html] [--output <path>] [--include-ignored] [--lang en|zh]
   guide [--lang en|zh]
   fix [--type <type>] [--severity <level>] [--lang en|zh]
@@ -1435,6 +1464,7 @@ Commands:
   conflicts [--json] [--ci] [--fail-on high|critical|medium]
   zombies [--json] [--ci] [--fail-on high|critical|medium]
   governance [--json] [--ci] [--fail-on high|critical|medium]
+  freshness [--json] [--ci] [--fail-on high|critical|medium]
   plan [--safe|--normal|--aggressive] [--json] [--output <path>]
   apply <plan.json> --dry-run [--json]
   ignore <finding-id> [--reason <text>]
@@ -1544,6 +1574,9 @@ function runDiagnose(args) {
   // Governance readiness detection
   const governanceFindings = runGovernanceAnalysis(db, skills);
 
+  // Freshness / update detection
+  const freshnessFindings = runFreshnessAnalysis(db, skills, { checkUpstream: !!args['check-upstream'] });
+
   // Duplicate and version drift detection
   const phase2Result = runPhase2Analysis(db, skills);
 
@@ -1554,6 +1587,7 @@ function runDiagnose(args) {
     conflictFindings: conflictFindings.length,
     zombieCandidates: zombieFindings.length,
     governanceFindings: governanceFindings.length,
+    freshnessFindings: freshnessFindings.length,
     duplicateGroups: phase2Result.groups.length,
     versionDriftFindings: phase2Result.drifts.length,
   };
@@ -1567,6 +1601,7 @@ function runDiagnose(args) {
     console.log(t('cli.conflictFindings', lang, summary.conflictFindings));
     console.log(t('cli.zombieCandidates', lang, summary.zombieCandidates));
     console.log(t('cli.governanceFindings', lang, summary.governanceFindings));
+    console.log(t('cli.freshnessFindings', lang, summary.freshnessFindings));
   }
 
   if (args.ci) {
@@ -1794,7 +1829,7 @@ function runFix(args) {
   }
 
   // Validate type
-  const validTypes = ['risk', 'zombie', 'duplicate', 'conflict', 'version_drift', 'governance', 'description_quality', 'scan_warning'];
+  const validTypes = ['risk', 'zombie', 'duplicate', 'conflict', 'version_drift', 'governance', 'freshness', 'description_quality', 'scan_warning'];
   if (typeFilter && !validTypes.includes(typeFilter)) {
     console.error(`${lang === 'zh' ? '无效的问题类型' : 'Invalid type'}: ${typeFilter}. ${lang === 'zh' ? '可选值' : 'Valid values'}: ${validTypes.join(', ')}`);
     process.exit(3);
@@ -1893,6 +1928,7 @@ function main() {
     if (command === 'conflicts') return runFindingsByType(args, 'conflict');
     if (command === 'zombies') return runFindingsByType(args, 'zombie');
     if (command === 'governance') return runFindingsByType(args, 'governance');
+    if (command === 'freshness') return runFindingsByType(args, 'freshness');
     if (command === 'plan') return runPlan(args);
     if (command === 'apply') return runApply(args);
     if (command === 'ignore') return runIgnore(args, true);

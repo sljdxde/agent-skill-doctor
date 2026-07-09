@@ -24,6 +24,7 @@ Agent Skill Doctor diagnoses local AI Agent Skills: duplicate installs, version 
 - `duplicate`: exact, same-source, or same-name duplicate skills.
 - `version_drift`: the same skill installed with different refs or content.
 - `governance`: registry / team-sharing readiness, such as missing owner, version, lifecycle status, stable/dev label, or trusted source.
+- `freshness`: whether a skill may need an update, such as missing source URLs, unpinned refs/commits, old remote-backed copies, or a lower version than a sibling copy. Use `--check-upstream` to verify against the upstream `HEAD` with `git ls-remote`.
 - `zombie`: low-activity or possibly abandoned skills.
 - `description_quality`: missing trigger, input/output, risk notes, or too-short descriptions.
 - `scan_warning`: missing `SKILL.md` or malformed frontmatter.
@@ -176,7 +177,11 @@ agent-skill-doctor risks --json
 agent-skill-doctor conflicts --json
 agent-skill-doctor duplicates --json
 agent-skill-doctor governance --json
+agent-skill-doctor freshness --json
 agent-skill-doctor zombies --json
+
+# Update detection with upstream verification
+agent-skill-doctor diagnose --check-upstream --lang en
 
 # Generate reports
 agent-skill-doctor report --format md --lang en
@@ -236,6 +241,7 @@ const {
   detectVersionDrift,
   detectConflicts,
   detectZombies,
+  detectFreshnessFindings,
   scanSkillForRisks,
   loadJsonRules,
   DEFAULT_CONFLICT_RULES

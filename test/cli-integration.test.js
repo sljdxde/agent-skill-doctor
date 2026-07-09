@@ -159,6 +159,22 @@ test('report JSON includes required relationship and plan containers', () => {
   assert.equal(typeof data.optimizationPlan, 'object');
 });
 
+test('report HTML renders successfully', () => {
+  const fixture = makeFixture();
+  const scan = run(['diagnose', '--root', fixture.skills, '--json'], {
+    env: { AGENT_SKILL_DOCTOR_HOME: fixture.home },
+  });
+  assert.equal(scan.status, 0, scan.stderr);
+
+  const out = path.join(fixture.temp, 'report.html');
+  const report = run(['report', '--format', 'html', '--output', out], {
+    env: { AGENT_SKILL_DOCTOR_HOME: fixture.home },
+  });
+  assert.equal(report.status, 0, report.stderr);
+  const html = fs.readFileSync(out, 'utf8');
+  assert.match(html, /Agent Skill Doctor Report/);
+});
+
 test('plan emits expectedState and apply dry-run marks stale actions', () => {
   const fixture = makeFixture();
   const diagnosed = run(['diagnose', '--root', fixture.skills, '--json'], {
