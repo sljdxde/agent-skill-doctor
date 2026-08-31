@@ -12,7 +12,7 @@ const cli = path.join(repoRoot, 'bin', 'agent-skill-doctor.js');
 
 function run(args, options = {}) {
   return spawnSync(process.execPath, [cli, ...args], {
-    cwd: repoRoot,
+    cwd: options.cwd || repoRoot,
     env: { ...process.env, ...options.env },
     encoding: 'utf8',
   });
@@ -198,4 +198,81 @@ test('plan emits expectedState and apply dry-run marks stale actions', () => {
   assert.equal(applied.status, 0, applied.stderr);
   const result = JSON.parse(applied.stdout.slice(applied.stdout.indexOf('{')));
   assert.ok(result.actions.some(action => action.status === 'stale_action'));
+});
+
+test('diagnose reconciles deleted skills, findings, and duplicate groups', () => {
+  const fixture = makeFixture();
+  const env = { AGENT_SKILL_DOCTOR_HOME: fixture.home };
+  const first = run(['diagnose', '--root', fixture.skills, '--json'], { env });
+  assert.equal(first.status, 0, first.stderr);
+  const firstData = JSON.parse(first.stdout.slice(first.stdout.indexOf('{')));
+  assert.ok(firstData.findings.some(f => f.skills.some(s => s.slug === 'danger')));
+  assert.ok(firstData.summary.duplicateGroups >= 1);
+
+  fs.rmSync(path.join(fixture.skills, 'danger'), { recursive: true, force: true });
+  fs.rmSync(path.join(fixture.skills, 'alpha-local'), { recursive: true, force: true });
+  const second = run(['diagnose', '--root', fixture.skills, '--json'], { env });
+  assert.equal(second.status, 0, second.stderr);
+  const secondData = JSON.parse(second.stdout.slice(second.stdout.indexOf('{')));
+  assert.deepEqual(secondData.skills.map(skill => skill.slug), ['alpha']);
+  assert.ok(!secondData.findings.some(f => f.skills.some(s => s.slug === 'danger')));
+  assert.equal(secondData.summary.duplicateGroups, 0);
+});
+
+test('version metadata does not count as an upstream ref', () => {
+  const fixture = makeFixture();
+  const versionOnly = path.join(fixture.skills, 'version-only');
+  fs.mkdirSync(versionOnly, { recursive: true });
+  fs.writeFileSync(path.join(versionOnly, 'SKILL.md'), [
+    '---',
+    'name: Version Only',
+    'source: https://github.com/example/version-only.git',
+    'version: 1.2.3',
+    '---',
+    '# Version Only',
+    'Use this skill when testing version metadata.',
+  ].join('\n'));
+
+  const result = run(['diagnose', '--root', fixture.skills, '--json'], {
+    env: { AGENT_SKILL_DOCTOR_HOME: fixture.home },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const data = JSON.parse(result.stdout.slice(result.stdout.indexOf('{')));
+  const finding = data.findings.find(f => f.type === 'freshness' && f.ruleId === 'unpinned-source' && f.skills.some(s => s.slug === 'version-only'));
+  assert.ok(finding, 'version-only skill should be reported as unpinned');
+});
+
+test('project-local agent roots are classified as project_local', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'asd-project-'));
+  const home = path.join(temp, 'home');
+  const doctorHome = path.join(temp, 'doctor-home');
+  const skillRoot = path.join(temp, '.codex', 'skills');
+  writeSkill(skillRoot, 'local-skill', 'Local Skill');
+
+  const result = run(['diagnose', '--root', skillRoot, '--json'], {
+    cwd: temp,
+    env: { AGENT_SKILL_DOCTOR_HOME: doctorHome, HOME: home, USERPROFILE: home },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const data = JSON.parse(result.stdout.slice(result.stdout.indexOf('{')));
+  const skill = data.skills.find(item => item.slug === 'local-skill');
+  assert.equal(skill.root_type, 'project_local');
+});
+
+test('apply dry-run filters actions by target skill id', () => {
+  const fixture = makeFixture();
+  const env = { AGENT_SKILL_DOCTOR_HOME: fixture.home };
+  const diagnosed = run(['diagnose', '--root', fixture.skills, '--json'], { env });
+  assert.equal(diagnosed.status, 0, diagnosed.stderr);
+  const planFile = path.join(fixture.temp, 'target-plan.json');
+  const planned = run(['plan', '--json', '--output', planFile], { env });
+  assert.equal(planned.status, 0, planned.stderr);
+  const plan = JSON.parse(fs.readFileSync(planFile, 'utf8'));
+  assert.ok(plan.actions.length >= 2);
+  const target = plan.actions[0].targetSkillId;
+  const applied = run(['apply', planFile, '--dry-run', '--target', target, '--json'], { env });
+  assert.equal(applied.status, 0, applied.stderr);
+  const result = JSON.parse(applied.stdout.slice(applied.stdout.indexOf('{')));
+  assert.ok(result.actions.length >= 1);
+  assert.ok(result.actions.every(action => action.targetSkillId === target));
 });

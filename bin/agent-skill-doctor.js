@@ -47,6 +47,13 @@ function normalizePath(p) {
   return path.resolve(expandHome(p)).replace(/\\/g, '/');
 }
 
+function isPathWithinRoot(filePath, root) {
+  const absolutePath = normalizePath(filePath);
+  const absoluteRoot = normalizePath(root);
+  const relative = path.relative(absoluteRoot, absolutePath);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
 function isDir(p) {
   try { return fs.existsSync(p) && fs.statSync(p).isDirectory(); } catch { return false; }
 }
@@ -405,16 +412,20 @@ function kindForFile(rel) {
 }
 
 function rootTypeFor(p) {
-  const n = p.replace(/\\/g, '/');
-  if (n.includes('/.skills-manager/')) return 'central_library';
-  if (n.includes('/.claude/') || n.includes('/.codex/') || n.includes('/.cursor/') || n.includes('/.opencode/') ||
-      n.includes('/.agent/') || n.includes('/.windsurf/') || n.includes('/.aider/') ||
-      n.includes('/.continue/') || n.includes('/.cody/') || n.includes('/.copilot/')) return 'agent_global';
-  if (n.includes('/.agents/')) {
-    // ~/.agents/ is global, <cwd>/.agents/ is project-local
-    const home = (os.homedir() || '').replace(/\\/g, '/');
-    if (n.startsWith(home + '/')) return 'agent_global';
-    return 'project_local';
+  const canonicalPath = value => {
+    try { return fs.realpathSync(value).replace(/\\/g, '/'); } catch { return normalizePath(value); }
+  };
+  const n = canonicalPath(p);
+  const home = canonicalPath(os.homedir() || '');
+  const cwd = canonicalPath(process.cwd());
+  if (n === `${home}/.skills-manager` || n.startsWith(`${home}/.skills-manager/`)) return 'central_library';
+
+  const agentDirs = ['.claude', '.codex', '.cursor', '.opencode', '.agent', '.windsurf', '.aider', '.continue', '.cody', '.copilot', '.agents'];
+  for (const agentDir of agentDirs) {
+    if (n === `${cwd}/${agentDir}` || n.startsWith(`${cwd}/${agentDir}/`)) return 'project_local';
+  }
+  for (const agentDir of agentDirs) {
+    if (n === `${home}/${agentDir}` || n.startsWith(`${home}/${agentDir}/`)) return 'agent_global';
   }
   return 'unknown';
 }
@@ -564,7 +575,7 @@ function parseSkillCandidate(candidate) {
   const agent = inferAgent(candidate.path);
   const skill = {
     id: '', upstreamSkillId: null, name, slug, description,
-    source: { type: fm.data.source ? 'git' : 'unknown', url: fm.data.source || fm.data.source_url || null, subdir: fm.data.subdir || null, ref: fm.data.ref || fm.data.version || null, commit: fm.data.commit || null },
+    source: { type: fm.data.source ? 'git' : 'unknown', url: fm.data.source || fm.data.source_url || null, subdir: fm.data.subdir || null, ref: fm.data.ref || null, commit: fm.data.commit || null },
     location: { path: candidate.path, root: candidate.root, rootType, agent, isSymlink: false, symlinkTarget: null },
     version: fm.data.version || null, sourceRef: fm.data.ref || null, sourceCommit: fm.data.commit || null, sourceTreeSha: fm.data.tree_sha || null,
     frontmatter: fm.data, tags: parseTags(fm.data), presets: [], agentTargets: [], files: hashResult.files,
@@ -625,6 +636,16 @@ function scanRoots(roots, options = {}) {
   return [...candidates.values()].map(parseSkillCandidate);
 }
 
+function reconcileMissingSkills(db, roots, seenSkillIds) {
+  const normalizedRoots = roots.map(normalizePath);
+  const rows = db.prepare('SELECT id, local_path, status FROM skill_records').all();
+  const markMissing = db.prepare("UPDATE skill_records SET status = 'missing' WHERE id = ?");
+  for (const row of rows) {
+    if (seenSkillIds.has(row.id) || row.status === 'missing') continue;
+    if (normalizedRoots.some(root => isPathWithinRoot(row.local_path, root))) markMissing.run(row.id);
+  }
+}
+
 function makeFinding(skill, { type, severity, detectorId, ruleId, title, description, issueType, evidenceText, recommendation }) {
   const participantKey = buildParticipantIdentityKey([skill]);
   const evidence = [{ file: skill._scan.mainFile || skill.location.path, text: evidenceText || title, anchor: normalizeAnchor(evidenceText || title) }];
@@ -681,6 +702,7 @@ function upsertFinding(db, finding, links) {
   const existing = db.prepare('SELECT id FROM findings WHERE id = ?').get(finding.id);
   if (existing) db.prepare('UPDATE findings SET type=?, severity=?, detector_id=?, rule_id=?, title=?, description=?, signature=?, evidence_json=?, recommendation=?, score=?, updated_at=? WHERE id=?').run(finding.type, finding.severity, finding.detectorId, finding.ruleId || null, finding.title, finding.description, finding.signature, JSON.stringify(finding.evidence || []), finding.recommendation || null, score, updatedAt, finding.id);
   else db.prepare('INSERT INTO findings (id, type, severity, detector_id, rule_id, title, description, signature, evidence_json, recommendation, score, ignored, ignored_reason, ignored_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?)').run(finding.id, finding.type, finding.severity, finding.detectorId, finding.ruleId || null, finding.title, finding.description, finding.signature, JSON.stringify(finding.evidence || []), finding.recommendation || null, score, createdAt, updatedAt);
+  db.prepare('DELETE FROM finding_skills WHERE finding_id = ?').run(finding.id);
   const stmt = db.prepare('INSERT OR IGNORE INTO finding_skills (finding_id, skill_id, role, added_at) VALUES (?, ?, ?, ?)');
   for (const link of links) stmt.run(link.findingId || finding.id, link.skillId, link.role || 'primary', link.addedAt || at);
 }
@@ -689,6 +711,7 @@ function upsertDuplicateGroup(db, group) {
   const at = nowIso();
   db.prepare('INSERT INTO duplicate_groups (id, strategy, confidence, canonical_skill_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET strategy=excluded.strategy, confidence=excluded.confidence, canonical_skill_id=excluded.canonical_skill_id, updated_at=excluded.updated_at')
     .run(group.id, group.strategy, group.confidence, group.canonicalSkillId || null, at, at);
+  db.prepare('DELETE FROM duplicate_group_members WHERE group_id = ?').run(group.id);
   const stmt = db.prepare('INSERT OR REPLACE INTO duplicate_group_members (group_id, skill_id, role, confidence, added_at) VALUES (?, ?, ?, ?, ?)');
   for (const member of group.members) stmt.run(group.id, member.skillId, member.role, member.confidence, at);
 }
@@ -750,6 +773,42 @@ function runPhase2Analysis(db, skills) {
   return { groups, drifts };
 }
 
+function reconcileDiagnoseState(db, roots, startedAt, seenFindingIds, seenGroupIds) {
+  const normalizedRoots = roots.map(normalizePath);
+  const startedMs = Date.parse(startedAt) || 0;
+  const findingRows = db.prepare('SELECT id, ignored, updated_at FROM findings').all();
+  const findingLinks = db.prepare('SELECT fs.finding_id, sr.local_path FROM finding_skills fs JOIN skill_records sr ON sr.id = fs.skill_id').all();
+  const linksByFinding = new Map();
+  for (const link of findingLinks) {
+    if (!linksByFinding.has(link.finding_id)) linksByFinding.set(link.finding_id, []);
+    linksByFinding.get(link.finding_id).push(link.local_path);
+  }
+  const deleteFinding = db.prepare('DELETE FROM findings WHERE id = ?');
+  for (const row of findingRows) {
+    if (row.ignored || seenFindingIds.has(row.id) || (Date.parse(row.updated_at || 0) || 0) >= startedMs) continue;
+    const paths = linksByFinding.get(row.id) || [];
+    if (paths.length > 0 && paths.every(filePath => normalizedRoots.some(root => isPathWithinRoot(filePath, root)))) {
+      deleteFinding.run(row.id);
+    }
+  }
+
+  const groupRows = db.prepare('SELECT id, updated_at FROM duplicate_groups').all();
+  const groupLinks = db.prepare('SELECT dgm.group_id, sr.local_path FROM duplicate_group_members dgm JOIN skill_records sr ON sr.id = dgm.skill_id').all();
+  const pathsByGroup = new Map();
+  for (const link of groupLinks) {
+    if (!pathsByGroup.has(link.group_id)) pathsByGroup.set(link.group_id, []);
+    pathsByGroup.get(link.group_id).push(link.local_path);
+  }
+  const deleteGroup = db.prepare('DELETE FROM duplicate_groups WHERE id = ?');
+  for (const row of groupRows) {
+    if (seenGroupIds.has(row.id) || (Date.parse(row.updated_at || 0) || 0) >= startedMs) continue;
+    const paths = pathsByGroup.get(row.id) || [];
+    if (paths.length > 0 && paths.every(filePath => normalizedRoots.some(root => isPathWithinRoot(filePath, root)))) {
+      deleteGroup.run(row.id);
+    }
+  }
+}
+
 function runGovernanceAnalysis(db, skills) {
   const findings = detectGovernanceFindings(skills);
   for (const finding of findings) upsertFinding(db, finding, finding.links || []);
@@ -766,14 +825,18 @@ function recordRun(db, run) {
   db.prepare('INSERT INTO doctor_runs (id, started_at, finished_at, status, skill_count, finding_count, duplicate_group_count, high_count, critical_count, config_json, summary_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(run.id, run.startedAt, run.finishedAt, run.status, run.skillCount, run.findingCount, 0, run.highCount, run.criticalCount, JSON.stringify(run.config || {}), JSON.stringify(run.summary || {}));
 }
 
-function listSkills(db) { return db.prepare('SELECT * FROM skill_records ORDER BY slug ASC').all(); }
+function listSkills(db) { return db.prepare("SELECT * FROM skill_records WHERE status IS NULL OR status <> 'missing' ORDER BY slug ASC").all(); }
 function listFindings(db, includeIgnored) { return db.prepare(`SELECT * FROM findings ${includeIgnored ? '' : 'WHERE ignored = 0'} ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 WHEN 'info' THEN 4 ELSE 5 END, type ASC, title ASC`).all(); }
 function listIgnored(db) { return db.prepare('SELECT * FROM findings WHERE ignored = 1 ORDER BY ignored_at DESC').all(); }
 function getFindingSkills(db, findingId) { return db.prepare('SELECT fs.*, sr.slug, sr.name, sr.local_path FROM finding_skills fs JOIN skill_records sr ON sr.id = fs.skill_id WHERE fs.finding_id = ? ORDER BY fs.role ASC, sr.slug ASC').all(findingId); }
 function setIgnored(db, id, ignored, reason, at) { return db.prepare('UPDATE findings SET ignored=?, ignored_reason=?, ignored_at=?, updated_at=? WHERE id=?').run(ignored ? 1 : 0, ignored ? (reason || null) : null, ignored ? at : null, at, id).changes || 0; }
 function listFindingSkills(db) { return db.prepare('SELECT * FROM finding_skills ORDER BY finding_id ASC, role ASC, skill_id ASC').all(); }
-function listDuplicateGroups(db) { return db.prepare('SELECT * FROM duplicate_groups ORDER BY confidence DESC, strategy ASC').all(); }
-function listDuplicateGroupMembers(db) { return db.prepare('SELECT * FROM duplicate_group_members ORDER BY group_id ASC, role ASC, skill_id ASC').all(); }
+function listDuplicateGroups(db) {
+  return db.prepare("SELECT dg.* FROM duplicate_groups dg WHERE (SELECT COUNT(*) FROM duplicate_group_members dgm JOIN skill_records sr ON sr.id = dgm.skill_id WHERE dgm.group_id = dg.id AND (sr.status IS NULL OR sr.status <> 'missing')) >= 2 ORDER BY dg.confidence DESC, dg.strategy ASC").all();
+}
+function listDuplicateGroupMembers(db) {
+  return db.prepare("SELECT dgm.* FROM duplicate_group_members dgm JOIN skill_records sr ON sr.id = dgm.skill_id WHERE sr.status IS NULL OR sr.status <> 'missing' ORDER BY dgm.group_id ASC, dgm.role ASC, dgm.skill_id ASC").all();
+}
 
 function buildReportData(db, includeIgnored) {
   const skills = listSkills(db);
@@ -1466,7 +1529,7 @@ Commands:
   governance [--json] [--ci] [--fail-on high|critical|medium]
   freshness [--json] [--ci] [--fail-on high|critical|medium]
   plan [--safe|--normal|--aggressive] [--json] [--output <path>]
-  apply <plan.json> --dry-run [--json]
+  apply <plan.json> --dry-run [--target <skill-id>] [--json]
   ignore <finding-id> [--reason <text>]
   unignore <finding-id>
   ignored list
@@ -1504,22 +1567,26 @@ function runScan(args) {
     db.exec('DELETE FROM duplicate_group_members; DELETE FROM duplicate_groups; DELETE FROM finding_skills; DELETE FROM findings; DELETE FROM skill_records;');
   }
   const skills = scanRoots(roots, { maxDepth: config.scan.maxDepth, full: !!args.full });
+  const findingIds = [];
   let findingCount = 0, highCount = 0, criticalCount = 0;
   for (const skill of skills) {
     upsertSkill(db, skill);
     const { findings, links } = detectPhase1Findings(skill);
     for (const finding of findings) {
       upsertFinding(db, finding, links.filter(l => l.findingId === finding.id));
+      findingIds.push(finding.id);
       findingCount++;
       if (finding.severity === 'high') highCount++;
       if (finding.severity === 'critical') criticalCount++;
     }
   }
+  reconcileMissingSkills(db, roots, new Set(skills.map(skill => skill.id)));
   const summary = { roots, skills: skills.length, phase1Findings: findingCount, dbPath: config.dbPath };
   recordRun(db, { id: sha256(`${startedAt}:${Math.random()}`), startedAt, finishedAt: nowIso(), status: 'ok', skillCount: skills.length, findingCount, highCount, criticalCount, config: { roots }, summary });
-  if (args.silent) return; // Called from runDiagnose, don't print
+  if (args.silent) return { roots, skills, findingIds, startedAt };
   if (args.json) console.log(JSON.stringify({ summary, skills: skills.map(s => ({ id: s.id, slug: s.slug, name: s.name, path: s.location.path, contentHash: s.hashes.contentSha256 })) }, null, 2));
   else console.log(t('cli.scanned', args.lang || 'en', skills.length, findingCount, config.dbPath));
+  return { roots, skills, findingIds, startedAt };
 }
 
 function rowToSkill(row) {
@@ -1543,11 +1610,11 @@ function rowToSkill(row) {
 }
 
 function listSkillObjects(db) {
-  return db.prepare('SELECT * FROM skill_records ORDER BY slug ASC').all().map(rowToSkill);
+  return db.prepare("SELECT * FROM skill_records WHERE status IS NULL OR status <> 'missing' ORDER BY slug ASC").all().map(rowToSkill);
 }
 
 function runDiagnose(args) {
-  runScan({ ...args, json: false, silent: true });
+  const scanResult = runScan({ ...args, json: false, silent: true });
   const { config, db } = open();
   const skills = listSkillObjects(db);
 
@@ -1579,6 +1646,16 @@ function runDiagnose(args) {
 
   // Duplicate and version drift detection
   const phase2Result = runPhase2Analysis(db, skills);
+
+  const seenFindingIds = new Set(scanResult.findingIds);
+  for (const finding of [...riskFindings, ...conflictFindings, ...zombieFindings, ...governanceFindings, ...freshnessFindings]) {
+    seenFindingIds.add(finding.id);
+  }
+  for (const group of phase2Result.groups) {
+    seenFindingIds.add(sha256(String(phase2.buildParticipantIdentityKey(group.skills) + ':duplicate:duplicate-detector:' + group.strategy + ':' + group.id)));
+  }
+  for (const drift of phase2Result.drifts) seenFindingIds.add(drift.id);
+  reconcileDiagnoseState(db, scanResult.roots, scanResult.startedAt, seenFindingIds, new Set(phase2Result.groups.map(group => group.id)));
 
   const data = buildReportData(db, !!args['include-ignored']);
   const summary = {
@@ -1756,7 +1833,10 @@ function runApply(args) {
   if (!planPath) { console.error(t('cli.applyRequiresPlan', lang)); process.exit(3); }
   if (!args['dry-run']) { console.error(t('cli.dryRunOnly', lang)); process.exit(3); }
   const plan = JSON.parse(fs.readFileSync(planPath, 'utf8'));
-  const actions = (plan.actions || []).map(action => ({
+  const plannedActions = args.target
+    ? (plan.actions || []).filter(action => action.targetSkillId === args.target || action.id === args.target)
+    : (plan.actions || []);
+  const actions = plannedActions.map(action => ({
     id: action.id,
     type: action.type,
     targetSkillId: action.targetSkillId,

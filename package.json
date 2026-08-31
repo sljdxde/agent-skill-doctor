@@ -1,6 +1,6 @@
 {
   "name": "agent-skill-doctor",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Diagnostic and governance CLI for AI agent skills",
   "type": "commonjs",
   "main": "./src/doctor/index.js",
