@@ -42,6 +42,8 @@ Agent Skill Doctor 用来帮你检查本地 AI Agent Skills 是否健康：有�
   - 描述质量过低：`+0.05`
 - 僵尸保护规则：`pinned/keep/core/system` 标签直接归零；官方来源归零；插件来源分数乘 `0.5`；第三方插件来源分数乘 `0.75`。
 - 僵尸阈值：`>=0.8` 是强疑似僵尸，`>=0.6` 是疑似僵尸，`>=0.4` 是低活跃。
+- 僵尸结果还会标记 `stale`（仍有配置/活动证据但长期不活跃）、`unused_candidate`（有安装证据但未发现引用）和 `untracked`（证据不足）。默认只建议核查、归档或禁用，不直接建议删除。
+- 扫描会在 Skill 目录及相邻 Agent/项目配置中查找 slug 或名称引用；结果会保留引用文件和证据置信度。可用 `--zombie-threshold` 和 `--min-confidence` 收紧筛选。
 - 描述质量从 60 分起算；描述过短、没有触发条件、没有输入输出、风险未说明都会扣分并生成提示。
 
 ## 安装
@@ -179,6 +181,12 @@ agent-skill-doctor duplicates --json
 agent-skill-doctor governance --json
 agent-skill-doctor zombies --json
 
+# 只看高置信度的僵尸候选
+agent-skill-doctor diagnose --json --min-confidence 0.8
+
+# 提高僵尸分数阈值，减少低活跃提示
+agent-skill-doctor diagnose --json --zombie-threshold 0.6
+
 # 更新检测（离线）
 agent-skill-doctor freshness --json
 
@@ -249,6 +257,43 @@ const {
   DEFAULT_CONFLICT_RULES
 } = require('agent-skill-doctor');
 ```
+
+## AI 解释（可选）
+
+诊断核心默认保持本地运行。可以生成不依赖网络的解释和下一步建议：
+
+```bash
+agent-skill-doctor explain --lang zh
+agent-skill-doctor explain --finding-id <finding-id> --json
+```
+
+如需使用 OrcaRouter，必须显式允许联网：
+
+```bash
+export ORCAROUTER_API_KEY="your-key"
+agent-skill-doctor explain \
+  --provider orcarouter \
+  --allow-network \
+  --model orcarouter/auto \
+  --lang zh
+```
+
+远程请求只发送经过脱敏的 Finding 摘要，不上传完整 Skill 文件。缺少 API key、未允许联网、超时或 Provider 出错时，会自动回退到本地解释。
+
+针对风险项做语义复核：
+
+```bash
+agent-skill-doctor review --ai --type risk --lang zh
+```
+
+针对描述、治理和结构问题生成修复草稿：
+
+```bash
+agent-skill-doctor fix --ai --type description_quality --lang zh
+agent-skill-doctor fix --ai --allow-network --provider orcarouter --output ./ai-fix-draft.json
+```
+
+`fix --ai` 只允许模型返回安全的 frontmatter 字段编辑，并展示 diff；不会自动修改 Skill 文件。未显式允许联网时，本地模式只给审阅建议，不凭空生成内容。
 
 ## 安全边界
 

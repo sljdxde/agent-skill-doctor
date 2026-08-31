@@ -8,6 +8,7 @@ const rules = require('./rules');
 const i18n = require('./i18n');
 const governance = require('./governance');
 const freshness = require('./freshness');
+const llm = require('./llm');
 
 module.exports = {
   // Phase 2 - Duplicate and drift detection
@@ -31,6 +32,8 @@ module.exports = {
   zombieLevelDescription: zombie.zombieLevelDescription,
   detectZombies: zombie.detectZombies,
   descriptionQuality: zombie.descriptionQuality,
+  usageEvidenceQuality: zombie.usageEvidenceQuality,
+  zombieClassification: zombie.zombieClassification,
 
   // Risk scanning
   getMatchedPatternId: riskLite.getMatchedPatternId,
@@ -60,5 +63,20 @@ module.exports = {
 
   // i18n
   t: i18n.t,
-  dictionaries: i18n.dictionaries
+  dictionaries: i18n.dictionaries,
+
+  // Optional LLM explanations
+  DEFAULT_ORCAROUTER_BASE_URL: llm.DEFAULT_ORCAROUTER_BASE_URL,
+  DEFAULT_ORCAROUTER_MODEL: llm.DEFAULT_ORCAROUTER_MODEL,
+  buildFindingContext: llm.buildFindingContext,
+  createOpenAICompatibleProvider: llm.createOpenAICompatibleProvider,
+  explainFindings: llm.explainFindings,
+  reviewFindings: llm.reviewFindings,
+  draftFixes: llm.draftFixes,
+  runAiTask: llm.runTask,
+  localExplain: llm.localExplain,
+  normalizeProvider: llm.normalizeProvider,
+  parseModelContent: llm.parseModelContent,
+  providerOptions: llm.providerOptions,
+  redactText: llm.redactText,
 };

@@ -12,6 +12,7 @@
     "./risk": "./src/doctor/risk-lite.js",
     "./governance": "./src/doctor/governance.js",
     "./freshness": "./src/doctor/freshness.js",
+    "./llm": "./src/doctor/llm.js",
     "./rules": "./src/doctor/rules.js",
     "./i18n": "./src/doctor/i18n.js"
   },

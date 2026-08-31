@@ -2,7 +2,14 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { computeZombieScore, zombieLevel, detectZombies, descriptionQuality } = require('../src/doctor/zombie');
+const {
+  computeZombieScore,
+  zombieLevel,
+  detectZombies,
+  descriptionQuality,
+  usageEvidenceQuality,
+  zombieClassification,
+} = require('../src/doctor/zombie');
 
 function skill(overrides) {
   return {
@@ -23,6 +30,7 @@ function skill(overrides) {
       manuallyPinned: false,
     },
     modifiedAt: overrides.modifiedAt || '2026-01-01T00:00:00.000Z',
+    _sourcePlugin: overrides._sourcePlugin || null,
   };
 }
 
@@ -43,6 +51,11 @@ test('skill with core tag returns zombie score 0', () => {
 
 test('skill with system tag returns zombie score 0', () => {
   const s = skill({ id: 'a', tags: ['system'] });
+  assert.equal(computeZombieScore(s), 0.0);
+});
+
+test('official plugin source is protected from zombie scoring', () => {
+  const s = skill({ id: 'official', _sourcePlugin: 'openai/skills' });
   assert.equal(computeZombieScore(s), 0.0);
 });
 
@@ -117,4 +130,61 @@ test('detectZombies findings are sorted by score descending', () => {
   if (findings.length >= 2) {
     assert.ok((findings[0].score || 0) >= (findings[1].score || 0));
   }
+});
+
+test('zombie findings expose confidence and usage evidence classification', () => {
+  const stale = skill({
+    id: 'stale',
+    description: '',
+    usage: {
+      presetCount: 0,
+      installedInAgents: ['claude'],
+      installedInProjects: [],
+      hasRecentModification: false,
+      lastActivityLogAt: '2026-01-01',
+      manuallyPinned: false,
+      confidence: 0.85,
+      referenceEvidence: [{ path: '/tmp/.claude/settings.json', kind: 'config_reference' }],
+    },
+  });
+  const findings = detectZombies([stale]);
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].classification, 'stale');
+  assert.equal(findings[0].confidence, 0.85);
+  assert.equal(findings[0].evidence[1].kind, 'usage-summary');
+  assert.equal(findings[0].evidence[1].references[0].path, '/tmp/.claude/settings.json');
+  assert.match(findings[0].recommendation, /references/);
+});
+
+test('low-confidence zombie candidates can be filtered without changing score', () => {
+  const candidate = skill({ id: 'candidate', description: '' });
+  assert.equal(zombieClassification(candidate, computeZombieScore(candidate)), 'untracked');
+  assert.equal(usageEvidenceQuality(candidate).level, 'low');
+  assert.equal(detectZombies([candidate], { minConfidence: 0.5 }).length, 0);
+  assert.equal(detectZombies([candidate], { minConfidence: 0.3 }).length, 1);
+});
+
+test('installed but inactive skills are unused candidates rather than untracked', () => {
+  const candidate = skill({
+    id: 'installed',
+    description: '',
+    usage: {
+      presetCount: 0,
+      installedInAgents: ['claude'],
+      installedInProjects: [],
+      hasRecentModification: false,
+      lastActivityLogAt: null,
+      manuallyPinned: false,
+      confidence: 0.6,
+    },
+  });
+  assert.equal(zombieClassification(candidate, computeZombieScore(candidate)), 'unused_candidate');
+  assert.equal(detectZombies([candidate])[0].classification, 'unused_candidate');
+});
+
+test('custom zombie threshold is respected', () => {
+  const candidate = skill({ id: 'threshold', description: 'Useful skill' });
+  const score = computeZombieScore(candidate);
+  assert.equal(detectZombies([candidate], { threshold: score + 0.01 }).length, 0);
+  assert.equal(detectZombies([candidate], { threshold: score }).length, 1);
 });

@@ -14,6 +14,7 @@ const phase2 = require('../src/doctor/phase2');
 const { detectGovernanceFindings } = require('../src/doctor/governance');
 const { detectFreshnessFindings } = require('../src/doctor/freshness');
 const { t, dictionaries } = require('../src/doctor/i18n');
+const { explainFindings, reviewFindings, draftFixes } = require('../src/doctor/llm');
 
 const SKIP_DIRS = new Set([
   '.git', 'node_modules', 'target', 'dist', 'build', '.tmp', '.DS_Store',
@@ -459,19 +460,40 @@ function parseManuallyPinned(frontmatter) {
   return false;
 }
 
+function listFrontmatterValues(value) {
+  if (Array.isArray(value)) return value.map(item => String(item).trim()).filter(Boolean);
+  return String(value || '').split(',').map(item => item.trim()).filter(Boolean);
+}
+
 function usageSignalsFor(candidatePath, rootType, agent, modifiedAt, frontmatter) {
   const isAgentGlobal = rootType === 'agent_global';
   const isProjectLocal = rootType === 'project_local';
   const modifiedMs = Date.parse(modifiedAt || 0);
   const recentWindowMs = 90 * 24 * 60 * 60 * 1000;
+  const explicitAgents = listFrontmatterValues(frontmatter.agents || frontmatter.agent_targets || frontmatter.agentTargets);
+  const explicitProjects = listFrontmatterValues(frontmatter.projects || frontmatter.project_targets || frontmatter.projectTargets);
+  const explicitPresets = listFrontmatterValues(frontmatter.presets || frontmatter.preset_names || frontmatter.presetNames);
+  const explicitReferences = listFrontmatterValues(frontmatter.references || frontmatter.reference_paths || frontmatter.used_by)
+    .map(reference => ({ path: reference, kind: 'frontmatter-reference', matchedBy: 'metadata' }));
+  const presetValue = Number(frontmatter.preset_count || frontmatter.presetCount);
+  const presetCount = Number.isFinite(presetValue) && presetValue > 0 ? presetValue : explicitPresets.length;
+  const signalSources = [];
+  if (isAgentGlobal || explicitAgents.length) signalSources.push('agent_installation');
+  if (isProjectLocal || explicitProjects.length) signalSources.push('project_installation');
+  if (presetCount > 0) signalSources.push('preset');
+  if (explicitReferences.length) signalSources.push('frontmatter_reference');
   return {
-    installedInAgents: isAgentGlobal && agent ? [agent] : [],
-    installedInProjects: isProjectLocal ? [path.dirname(candidatePath)] : [],
-    presetCount: Number(frontmatter.preset_count || frontmatter.presetCount || 0),
+    installedInAgents: [...new Set([...(isAgentGlobal && agent ? [agent] : []), ...explicitAgents])],
+    installedInProjects: [...new Set([...(isProjectLocal ? [path.dirname(candidatePath)] : []), ...explicitProjects])],
+    presetCount,
     hasRecentModification: modifiedMs > 0 ? Date.now() - modifiedMs <= recentWindowMs : false,
     lastActivityLogAt: frontmatter.last_activity_at || frontmatter.lastActivityLogAt || null,
     manuallyPinned: parseManuallyPinned(frontmatter),
-    confidence: isAgentGlobal || isProjectLocal ? 0.6 : 0.3,
+    referenceEvidence: explicitReferences,
+    signalSources,
+    confidence: explicitAgents.length || explicitProjects.length || explicitPresets.length || explicitReferences.length
+      ? 0.85
+      : (isAgentGlobal || isProjectLocal ? 0.6 : 0.3),
   };
 }
 
@@ -633,7 +655,100 @@ function scanRoots(roots, options = {}) {
     if (!fs.existsSync(root)) continue;
     for (const c of findSkillCandidates(root, root, 0, options.maxDepth || 6)) candidates.set(c.path, c);
   }
-  return [...candidates.values()].map(parseSkillCandidate);
+  const skills = [...candidates.values()].map(parseSkillCandidate);
+  const references = buildUsageReferenceIndex(skills);
+  for (const skill of skills) {
+    const discovered = references.get(skill.id) || [];
+    const existing = Array.isArray(skill.usage.referenceEvidence) ? skill.usage.referenceEvidence : [];
+    skill.usage.referenceEvidence = [...existing, ...discovered].slice(0, 20);
+    if (discovered.length) {
+      skill.usage.signalSources = [...new Set([...(skill.usage.signalSources || []), 'config_reference'])];
+      skill.usage.confidence = Math.max(Number(skill.usage.confidence) || 0, 0.85);
+    }
+  }
+  return skills;
+}
+
+function escapeRegExp(input) {
+  return String(input).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function isReferenceFile(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (['.json', '.yaml', '.yml', '.toml'].includes(ext)) return true;
+  if (ext !== '.md') return false;
+  const base = path.basename(filePath).toLowerCase();
+  if (['agents.md', 'claude.md', 'codex.md', 'cursor.md', 'settings.md'].includes(base)) return true;
+  return /\/(?:\.agent|\.agents|\.codex|\.claude|\.cursor|\.opencode|\.windsurf|\.aider|\.continue|\.cody|\.copilot)\//i.test(filePath);
+}
+
+function referenceRootsFor(skillRoot, rootType) {
+  const root = normalizePath(skillRoot);
+  const roots = [root];
+  const base = path.basename(root);
+  if (['skills', 'skills-core', 'plugins'].includes(base)) roots.push(path.dirname(root));
+  if (rootType === 'project_local') roots.push(path.dirname(path.dirname(root)));
+  return [...new Set(roots)].filter(isDir);
+}
+
+function buildUsageReferenceIndex(skills) {
+  const index = new Map(skills.map(skill => [skill.id, []]));
+  const skillPaths = skills.map(skill => skill.location?.path).filter(Boolean);
+  const files = new Map();
+  const searchRoots = new Set();
+  for (const skill of skills) {
+    for (const searchRoot of referenceRootsFor(skill.location?.root, skill.location?.rootType)) {
+      searchRoots.add(searchRoot);
+    }
+  }
+  for (const searchRoot of searchRoots) {
+    for (const file of listFiles(searchRoot)) {
+      if (!isReferenceFile(file.path)) continue;
+      if (skillPaths.some(skillPath => isPathWithinRoot(file.path, skillPath))) continue;
+      if (!files.has(file.path)) files.set(file.path, file);
+    }
+  }
+
+  const candidates = skills.map(skill => {
+    const slug = String(skill.slug || '').trim().toLowerCase();
+    const name = String(skill.name || '').trim().toLowerCase();
+    return {
+      skill,
+      slugPattern: slug ? new RegExp(`(^|[^a-z0-9])${escapeRegExp(slug)}([^a-z0-9]|$)`, 'i') : null,
+      namePattern: name && (name.length >= 5 || /\s/.test(name))
+        ? new RegExp(`(^|[^a-z0-9])${escapeRegExp(name)}([^a-z0-9]|$)`, 'i')
+        : null,
+    };
+  });
+  let inspected = 0;
+  for (const file of files.values()) {
+    if (inspected++ >= 2000) break;
+    let text;
+    try {
+      if (file.sizeBytes > 512 * 1024) continue;
+      text = fs.readFileSync(file.path, 'utf8');
+    } catch { continue; }
+    const lower = text.toLowerCase();
+    const lines = text.split(/\r?\n/);
+    for (const candidate of candidates) {
+      const matchesSlug = candidate.slugPattern && candidate.slugPattern.test(lower);
+      const matchesName = candidate.namePattern && candidate.namePattern.test(lower);
+      if (!matchesSlug && !matchesName) continue;
+      const matchLine = lines.find(line => {
+        const lineLower = line.toLowerCase();
+        return (candidate.slugPattern && candidate.slugPattern.test(lineLower)) || (candidate.namePattern && candidate.namePattern.test(lineLower));
+      });
+      const evidence = {
+        path: file.path,
+        kind: 'config_reference',
+        matchedBy: matchesSlug ? 'slug' : 'name',
+        snippet: String(matchLine || '').trim().slice(0, 240),
+      };
+      const list = index.get(candidate.skill.id);
+      if (list && !list.some(item => item.path === evidence.path)) list.push(evidence);
+    }
+  }
+  return index;
 }
 
 function reconcileMissingSkills(db, roots, seenSkillIds) {
@@ -839,7 +954,17 @@ function listDuplicateGroupMembers(db) {
 }
 
 function buildReportData(db, includeIgnored) {
-  const skills = listSkills(db);
+  const skills = listSkills(db).map(row => {
+    let raw = {};
+    try { raw = row.raw_json ? JSON.parse(row.raw_json) : {}; } catch {}
+    return {
+      ...row,
+      usage: raw.usage || {},
+      tags: raw.tags || [],
+      location: raw.location || null,
+      source: raw.source || null,
+    };
+  });
   const rows = listFindings(db, includeIgnored);
   const findings = rows.map(row => ({ id: row.id, type: row.type, severity: row.severity, detectorId: row.detector_id, ruleId: row.rule_id, title: row.title, description: row.description, signature: row.signature, evidence: JSON.parse(row.evidence_json || '[]'), recommendation: row.recommendation, score: row.score, ignored: !!row.ignored, ignoredReason: row.ignored_reason, ignoredAt: row.ignored_at, createdAt: row.created_at, updatedAt: row.updated_at, skills: getFindingSkills(db, row.id) }));
   const bySeverity = {}, byType = {};
@@ -1228,13 +1353,20 @@ function renderHtml(data, lang, reportPath) {
       const desc = z.finding.description || '';
       const factorsMatch = desc.match(/Factors:\s*(.+?)\.?\s*$/);
       const factors = factorsMatch ? factorsMatch[1] : '';
-      return `<div style="margin:0.3rem 0;font-size:0.8rem"><span class="badge badge-${z.finding.severity}" style="font-size:0.6rem;padding:0.1rem 0.35rem">${D(`severity.${z.finding.severity}`)}</span> <code>${escapeHtml(z.skill?.slug || z.skill?.name || '')}</code> <span style="color:var(--muted)">(score: ${score})</span>${factors ? `<br><span style="font-size:0.75rem;color:var(--muted);padding-left:1.5rem">${escapeHtml(factors)}</span>` : ''}</div>`;
+      const usage = (z.finding.evidence || []).find(item => item.kind === 'usage-summary') || {};
+      const classification = usage.classification || 'unused_candidate';
+      const references = Array.isArray(usage.references) ? usage.references : [];
+      const referenceLabel = references.length
+        ? (lang === 'zh' ? `引用 ${references.length} 个配置文件` : `${references.length} config reference(s)`)
+        : (lang === 'zh' ? '未发现配置引用' : 'no config reference found');
+      const confidenceLabel = lang === 'zh' ? '置信度' : 'confidence';
+      return `<div style="margin:0.3rem 0;font-size:0.8rem"><span class="badge badge-${z.finding.severity}" style="font-size:0.6rem;padding:0.1rem 0.35rem">${D(`severity.${z.finding.severity}`)}</span> <code>${escapeHtml(z.skill?.slug || z.skill?.name || '')}</code> <span style="color:var(--muted)">(score: ${score})</span><br><span style="font-size:0.75rem;color:var(--muted);padding-left:1.5rem">${escapeHtml(classification)} · ${confidenceLabel}: ${usage.confidenceLevel || 'low'} · ${escapeHtml(referenceLabel)}</span>${factors ? `<br><span style="font-size:0.75rem;color:var(--muted);padding-left:1.5rem">${escapeHtml(factors)}</span>` : ''}</div>`;
     }).join('');
     if (zombieTotal > 15) zombieDetail += `<div style="font-size:0.75rem;color:var(--muted)">... ${lang === 'zh' ? '还有' : 'and'} ${zombieTotal - 15} ${lang === 'zh' ? '个' : 'more'}</div>`;
   }
   pathHtml += `<div style="${stepStyle};background:${zombieTotal > 0 ? '#f59e0b' : '#10b981'}22;border-left:4px solid ${zombieTotal > 0 ? '#f59e0b' : '#10b981'}">
     <strong>${lang === 'zh' ? '第 3 步：僵尸技能' : 'Step 3: Zombie Skills'}</strong> <span class="tag">${zombieTotal}</span><br>
-    <span style="color:var(--muted);font-size:0.8rem">${zombieTotal === 0 ? (lang === 'zh' ? '无僵尸技能。' : 'No zombie skills found.') : (lang === 'zh' ? '优先清理高分僵尸，低分的可暂保留。' : 'Prioritize high-score zombies. Low-score ones can be kept for now.')}</span>
+    <span style="color:var(--muted);font-size:0.8rem">${zombieTotal === 0 ? (lang === 'zh' ? '无僵尸技能。' : 'No zombie skills found.') : (lang === 'zh' ? '先核查引用和活动证据，再决定归档或禁用。' : 'Check references and activity evidence before archiving or disabling.')}</span>
     ${zombieDetail ? `<details style="margin-top:0.5rem"><summary style="cursor:pointer;font-size:0.8rem;color:var(--muted)">${lang === 'zh' ? '查看详情' : 'View details'}</summary>${zombieDetail}</details>` : ''}
   </div>`;
 
@@ -1518,17 +1650,19 @@ function usage() {
 
 Commands:
   scan [--full] [--rebuild-index] [--root <path>] [--json] [--lang en|zh]
-  diagnose [--json] [--ci] [--fail-on high|critical|medium] [--rules <dir>] [--include-ignored] [--check-upstream] [--lang en|zh]
+  diagnose [--json] [--ci] [--fail-on high|critical|medium] [--rules <dir>] [--include-ignored] [--check-upstream] [--zombie-threshold <0..1>] [--min-confidence <0..1>] [--lang en|zh]
   report [--format md|json|html] [--output <path>] [--include-ignored] [--lang en|zh]
   guide [--lang en|zh]
-  fix [--type <type>] [--severity <level>] [--lang en|zh]
+  fix [--type <type>] [--severity <level>] [--ai] [--provider local|orcarouter|openai-compatible] [--allow-network] [--output <path>] [--json] [--lang en|zh]
+  review --ai [--type risk] [--provider local|orcarouter|openai-compatible] [--allow-network] [--finding-id <id>] [--output <path>] [--json] [--lang en|zh]
   duplicates [--json]
   risks [--json] [--ci] [--fail-on high|critical|medium]
   conflicts [--json] [--ci] [--fail-on high|critical|medium]
   zombies [--json] [--ci] [--fail-on high|critical|medium]
   governance [--json] [--ci] [--fail-on high|critical|medium]
-  freshness [--json] [--ci] [--fail-on high|critical|medium]
-  plan [--safe|--normal|--aggressive] [--json] [--output <path>]
+ freshness [--json] [--ci] [--fail-on high|critical|medium]
+  explain [--provider local|orcarouter|openai-compatible] [--allow-network] [--model <id>] [--base-url <url>] [--finding-id <id>] [--max-findings <n>] [--json] [--lang en|zh]
+ plan [--safe|--normal|--aggressive] [--json] [--output <path>]
   apply <plan.json> --dry-run [--target <skill-id>] [--json]
   ignore <finding-id> [--reason <text>]
   unignore <finding-id>
@@ -1635,7 +1769,10 @@ function runDiagnose(args) {
   for (const f of conflictFindings) upsertFinding(db, f, f.links || []);
 
   // Zombie detection
-  const zombieFindings = detectZombies(skills);
+  const zombieFindings = detectZombies(skills, {
+    threshold: args['zombie-threshold'],
+    minConfidence: args['min-confidence'],
+  });
   for (const f of zombieFindings) upsertFinding(db, f, f.links || []);
 
   // Governance readiness detection
@@ -1700,6 +1837,187 @@ function runReport(args) {
 function outputJsonOrText(args, jsonValue, textLines) {
   if (args.json) console.log(JSON.stringify(jsonValue, null, 2));
   else console.log(textLines.join('\n'));
+}
+
+function rowToFinding(db, row) {
+  return {
+    id: row.id,
+    type: row.type,
+    severity: row.severity,
+    detectorId: row.detector_id,
+    ruleId: row.rule_id,
+    title: row.title,
+    description: row.description,
+    recommendation: row.recommendation,
+    evidence: JSON.parse(row.evidence_json || '[]'),
+    skills: getFindingSkills(db, row.id),
+  };
+}
+
+function rowToAiFinding(db, row) {
+  const finding = rowToFinding(db, row);
+  const skillRows = db.prepare('SELECT * FROM skill_records WHERE id IN (SELECT skill_id FROM finding_skills WHERE finding_id = ?) ORDER BY slug ASC').all(row.id);
+  finding.skills = skillRows.map(rowToSkill);
+  if (finding.skills[0]) finding.frontmatter = finding.skills[0].frontmatter || {};
+  return finding;
+}
+
+async function runExplain(args) {
+  const { db } = open();
+  let rows = listFindings(db, !!args['include-ignored']);
+  if (args['finding-id']) rows = rows.filter(row => row.id === args['finding-id']);
+  const findings = rows.map(row => rowToFinding(db, row));
+  const maxFindings = Math.max(1, Math.min(50, Number(args['max-findings']) || 10));
+  const result = await explainFindings(findings, {
+    provider: args.provider,
+    baseUrl: args['base-url'],
+    model: args.model,
+    lang: args.lang || 'en',
+    maxFindings,
+    allowNetwork: !!args['allow-network'],
+    timeoutMs: args.timeout,
+  });
+  if (args.json) {
+    console.log(JSON.stringify({ ...result, findingCount: findings.length }, null, 2));
+    return;
+  }
+  const fallbackText = result.fallback
+    ? ' (' + (args.lang === 'zh' ? '已回退到本地模式' : 'fell back to local mode') + ': ' + result.fallbackReason + ')'
+    : '';
+  console.log((args.lang === 'zh' ? '解释模式' : 'Explanation mode') + ': ' + result.provider + fallbackText);
+  if (result.model) console.log((args.lang === 'zh' ? '模型' : 'Model') + ': ' + result.model);
+  console.log(result.summary || (args.lang === 'zh' ? '没有可解释的发现。' : 'No findings to explain.'));
+  for (const item of result.items || []) {
+    console.log('\n[' + item.findingId + ']');
+    if (item.explanation) console.log((args.lang === 'zh' ? '说明' : 'Explanation') + ': ' + item.explanation);
+    if (item.nextStep) console.log((args.lang === 'zh' ? '下一步' : 'Next step') + ': ' + item.nextStep);
+  }
+}
+
+function aiOptionsFromArgs(args) {
+  return {
+    provider: args.provider,
+    baseUrl: args['base-url'],
+    model: args.model,
+    lang: args.lang || 'en',
+    maxFindings: args['max-findings'],
+    allowNetwork: !!args['allow-network'],
+    timeoutMs: args.timeout,
+  };
+}
+
+async function runAiReview(args) {
+  const { db } = open();
+  const type = args.type || 'risk';
+  if (type !== 'risk') {
+    console.error(`${args.lang === 'zh' ? 'review --ai 当前只支持 risk 类型' : 'review --ai currently supports only risk findings'}.`);
+    process.exit(3);
+  }
+  let rows = listFindings(db, !!args['include-ignored']).filter(row => row.type === 'risk');
+  if (args['finding-id']) rows = rows.filter(row => row.id === args['finding-id']);
+  const findings = rows.map(row => rowToAiFinding(db, row));
+  const result = await reviewFindings(findings, aiOptionsFromArgs(args));
+  const output = { ...result, findingCount: findings.length };
+  if (args.output) {
+    const outPath = path.resolve(expandHome(args.output));
+    ensureDir(path.dirname(outPath));
+    fs.writeFileSync(outPath, JSON.stringify(output, null, 2), 'utf8');
+  }
+  if (args.json) return console.log(JSON.stringify(output, null, 2));
+  console.log((args.lang === 'zh' ? 'AI 风险复核' : 'AI risk review') + ': ' + result.provider + (result.fallback ? ` (${result.fallbackReason})` : ''));
+  console.log(result.summary || (args.lang === 'zh' ? '没有风险发现。' : 'No risk findings.'));
+  for (const item of result.items || []) {
+    console.log(`\n[${item.findingId}] ${item.verdict || 'needs_review'}${item.confidence != null ? ` (${Number(item.confidence).toFixed(2)})` : ''}`);
+    if (item.explanation) console.log((args.lang === 'zh' ? '判断' : 'Assessment') + ': ' + item.explanation);
+    if (item.guardrails) console.log((args.lang === 'zh' ? '防护建议' : 'Guardrails') + ': ' + item.guardrails);
+    if (item.nextStep) console.log((args.lang === 'zh' ? '下一步' : 'Next step') + ': ' + item.nextStep);
+  }
+}
+
+function frontmatterValue(value) {
+  const text = String(value ?? '').replace(/[\r\n]+/g, ' ').trim();
+  if (!text) return "''";
+  if (/^[A-Za-z0-9._\/-]+$/.test(text)) return text;
+  return `"${text.replace(/"/g, '\\"')}"`;
+}
+
+function buildFrontmatterPatch(skill, edits) {
+  const localPath = skill?.location?.path || skill?.local_path;
+  if (!localPath || !Array.isArray(edits) || edits.length === 0) return null;
+  if (!skill?._scan?.hasSkillMd) return null;
+  const mainFile = skill?._scan?.mainFile || 'SKILL.md';
+  const filePath = path.join(localPath, mainFile);
+  if (!fs.existsSync(filePath)) return null;
+  let oldText;
+  try { oldText = fs.readFileSync(filePath, 'utf8'); } catch { return null; }
+
+  const match = oldText.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  const newline = oldText.includes('\r\n') ? '\r\n' : '\n';
+  let nextText = oldText;
+  const safeEdits = edits.filter(edit => edit && edit.field && edit.value != null);
+  if (!safeEdits.length) return null;
+  if (match) {
+    const lines = match[1].split(/\r?\n/);
+    for (const edit of safeEdits) {
+      const key = String(edit.field);
+      const index = lines.findIndex(line => new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\s*:`).test(line));
+      const replacement = `${key}: ${frontmatterValue(edit.value)}`;
+      if (index >= 0) lines[index] = replacement;
+      else lines.push(replacement);
+    }
+    const replacementBlock = `---${newline}${lines.join(newline)}${newline}---`;
+    nextText = oldText.slice(0, match.index) + replacementBlock + oldText.slice(match.index + match[0].length);
+  } else {
+    const metadata = safeEdits.map(edit => `${edit.field}: ${frontmatterValue(edit.value)}`).join(newline);
+    nextText = `---${newline}${metadata}${newline}---${newline}${oldText}`;
+  }
+  if (nextText === oldText) return null;
+  const oldLines = oldText.split(/\r?\n/);
+  const newLines = nextText.split(/\r?\n/);
+  const patch = [
+    `--- ${filePath}`,
+    `+++ ${filePath}`,
+    `@@ -1,${oldLines.length} +1,${newLines.length} @@`,
+    ...oldLines.map(line => `-${line}`),
+    ...newLines.map(line => `+${line}`),
+  ].join('\n');
+  return { filePath, edits: safeEdits, patch };
+}
+
+async function runAiFix(args) {
+  const { db } = open();
+  const allowedTypes = new Set(['description_quality', 'governance', 'scan_warning']);
+  const type = args.type || null;
+  if (type && !allowedTypes.has(type)) {
+    console.error(`${args.lang === 'zh' ? 'fix --ai 仅支持 description_quality、governance、scan_warning' : 'fix --ai supports description_quality, governance, and scan_warning only'}.`);
+    process.exit(3);
+  }
+  let rows = listFindings(db, !!args['include-ignored']).filter(row => allowedTypes.has(row.type));
+  if (type) rows = rows.filter(row => row.type === type);
+  if (args['finding-id']) rows = rows.filter(row => row.id === args['finding-id']);
+  const findings = rows.map(row => rowToAiFinding(db, row));
+  const result = await draftFixes(findings, aiOptionsFromArgs(args));
+  const items = (result.items || []).map(item => {
+    const finding = findings.find(candidate => candidate.id === item.findingId);
+    const skill = finding?.skills?.[0];
+    const patch = buildFrontmatterPatch(skill, item.edits);
+    return { ...item, targetPath: skill?.location?.path || skill?.local_path || null, patch: patch?.patch || null };
+  });
+  const output = { ...result, items, findingCount: findings.length };
+  if (args.output) {
+    const outPath = path.resolve(expandHome(args.output));
+    ensureDir(path.dirname(outPath));
+    fs.writeFileSync(outPath, JSON.stringify(output, null, 2), 'utf8');
+  }
+  if (args.json) return console.log(JSON.stringify(output, null, 2));
+  console.log((args.lang === 'zh' ? 'AI 修复草稿' : 'AI repair draft') + ': ' + result.provider + (result.fallback ? ` (${result.fallbackReason})` : ''));
+  console.log(result.summary || (args.lang === 'zh' ? '没有可修复的发现。' : 'No fixable findings.'));
+  for (const item of items) {
+    console.log(`\n[${item.findingId}]${item.targetPath ? ` ${item.targetPath}` : ''}`);
+    if (item.explanation) console.log((args.lang === 'zh' ? '说明' : 'Explanation') + ': ' + item.explanation);
+    if (item.nextStep) console.log((args.lang === 'zh' ? '下一步' : 'Next step') + ': ' + item.nextStep);
+    if (item.patch) console.log(`\n${item.patch}`);
+  }
 }
 
 function runDuplicates(args) {
@@ -1895,7 +2213,8 @@ function runGuide(args) {
   console.log(lines.join('\n'));
 }
 
-function runFix(args) {
+async function runFix(args) {
+  if (args.ai) return runAiFix(args);
   const { db } = open();
   const lang = args.lang || 'en';
   const typeFilter = args.type || null;
@@ -1994,7 +2313,7 @@ function runFix(args) {
   console.log(lines.join('\n'));
 }
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv.slice(2));
   const command = args._[0] || 'help';
   try {
@@ -2002,13 +2321,15 @@ function main() {
     if (command === 'diagnose') return runDiagnose(args);
     if (command === 'report') return runReport(args);
     if (command === 'guide') return runGuide(args);
-    if (command === 'fix') return runFix(args);
+    if (command === 'fix') return await runFix(args);
+    if (command === 'review') return await runAiReview(args);
     if (command === 'duplicates') return runDuplicates(args);
     if (command === 'risks') return runFindingsByType(args, 'risk');
     if (command === 'conflicts') return runFindingsByType(args, 'conflict');
     if (command === 'zombies') return runFindingsByType(args, 'zombie');
     if (command === 'governance') return runFindingsByType(args, 'governance');
     if (command === 'freshness') return runFindingsByType(args, 'freshness');
+    if (command === 'explain') return await runExplain(args);
     if (command === 'plan') return runPlan(args);
     if (command === 'apply') return runApply(args);
     if (command === 'ignore') return runIgnore(args, true);
@@ -2021,4 +2342,7 @@ function main() {
   }
 }
 
-main();
+main().catch(err => {
+  console.error(err && err.stack ? err.stack : String(err));
+  process.exit(3);
+});

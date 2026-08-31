@@ -42,6 +42,8 @@ Agent Skill Doctor diagnoses local AI Agent Skills: duplicate installs, version 
   - weak description: `+0.05`
 - Zombie protection: `pinned/keep/core/system` tags and official sources return `0`; plugin sources multiply by `0.5`; third-party plugin sources multiply by `0.75`.
 - Zombie levels: `>=0.8` strong suspected zombie, `>=0.6` suspected zombie, `>=0.4` low activity.
+- Findings are classified as `stale` (reference or activity evidence exists but the skill is inactive), `unused_candidate` (installed but no reference was found), or `untracked` (evidence is incomplete). Recommendations are intentionally review/archive/disable first, never automatic deletion.
+- The scanner checks each skill directory and nearby agent/project configuration files for slug or name references, then records matched files and evidence confidence. Use `--zombie-threshold` and `--min-confidence` to narrow results.
 - Description quality starts at 60 points; short descriptions, missing triggers, missing input/output notes, and undocumented risks reduce the score and create findings.
 
 ## Install
@@ -180,6 +182,12 @@ agent-skill-doctor governance --json
 agent-skill-doctor freshness --json
 agent-skill-doctor zombies --json
 
+# Only show high-confidence zombie candidates
+agent-skill-doctor diagnose --json --min-confidence 0.8
+
+# Raise the zombie score threshold to reduce low-activity noise
+agent-skill-doctor diagnose --json --zombie-threshold 0.6
+
 # Update detection with upstream verification
 agent-skill-doctor diagnose --check-upstream --lang en
 
@@ -247,6 +255,43 @@ const {
   DEFAULT_CONFLICT_RULES
 } = require('agent-skill-doctor');
 ```
+
+## Optional AI Explanations
+
+The diagnostic core stays local by default. Generate explanations and next steps without network access:
+
+```bash
+agent-skill-doctor explain --lang en
+agent-skill-doctor explain --finding-id <finding-id> --json
+```
+
+To use OrcaRouter, network access must be explicitly enabled:
+
+```bash
+export ORCAROUTER_API_KEY="your-key"
+agent-skill-doctor explain \
+  --provider orcarouter \
+  --allow-network \
+  --model orcarouter/auto \
+  --lang en
+```
+
+Remote requests contain only redacted finding summaries, never complete skill files. Missing credentials, disabled network access, timeouts, or provider errors automatically fall back to local explanations.
+
+Run an AI-assisted semantic review for risk findings:
+
+```bash
+agent-skill-doctor review --ai --type risk --lang en
+```
+
+Generate repair drafts for description, governance, and structure findings:
+
+```bash
+agent-skill-doctor fix --ai --type description_quality --lang en
+agent-skill-doctor fix --ai --allow-network --provider orcarouter --output ./ai-fix-draft.json
+```
+
+`fix --ai` accepts only safe frontmatter field edits and prints a diff; it never edits skill files automatically. Without explicit network permission, local mode provides a conservative review prompt instead of inventing content.
 
 ## Safety Boundaries
 

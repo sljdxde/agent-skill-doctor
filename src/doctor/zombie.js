@@ -32,6 +32,7 @@ function descriptionQuality(skill) {
 }
 
 const OFFICIAL_SOURCE_RE = /github\.com\/(anthropics|openai|github|google-gemini)\//i;
+const OFFICIAL_PLUGIN_RE = /^(anthropics|openai|github|google-gemini)(\/|$)/i;
 const PLUGIN_SOURCE_RE = /superpowers|using-superpowers/i;
 
 /**
@@ -42,9 +43,65 @@ function sourceProtectionLevel(skill) {
   const sourceUrl = skill.source?.url || '';
   const plugin = skill._sourcePlugin || '';
   if (OFFICIAL_SOURCE_RE.test(sourceUrl)) return 'official';
+  if (plugin && OFFICIAL_PLUGIN_RE.test(plugin)) return 'official';
   if (plugin && PLUGIN_SOURCE_RE.test(plugin)) return 'plugin';
   if (plugin) return 'thirdParty';
   return null;
+}
+
+function isProtectedSkill(skill) {
+  const usage = skill.usage || {};
+  const tags = usage.tags || skill.tags || [];
+  return Boolean(
+    usage.manuallyPinned
+      || tags.includes('keep')
+      || tags.includes('core')
+      || tags.includes('system')
+      || sourceProtectionLevel(skill) === 'official'
+  );
+}
+
+function usageEvidenceQuality(skill) {
+  const usage = skill.usage || {};
+  const sources = [];
+  if (Array.isArray(usage.referenceEvidence) && usage.referenceEvidence.length) sources.push('config_reference');
+  if ((usage.presetCount || 0) > 0) sources.push('preset');
+  if (Array.isArray(usage.installedInAgents) && usage.installedInAgents.length) sources.push('agent_installation');
+  if (Array.isArray(usage.installedInProjects) && usage.installedInProjects.length) sources.push('project_installation');
+  if (usage.lastActivityLogAt || (usage.activityCount || 0) > 0 || (usage.invocationCount || 0) > 0) sources.push('activity');
+
+  const configuredConfidence = Number(usage.confidence);
+  const score = Number.isFinite(configuredConfidence)
+    ? clamp(configuredConfidence, 0, 1)
+    : (sources.length ? 0.6 : 0.3);
+  const level = score >= 0.8 ? 'high' : score >= 0.5 ? 'medium' : 'low';
+  return { score, level, sources };
+}
+
+function zombieClassification(skill, score) {
+  if (isProtectedSkill(skill)) return 'protected';
+  if (score < 0.4) return 'normal';
+  const usage = skill.usage || {};
+  const hasActivityEvidence = Boolean(
+    (usage.presetCount || 0) > 0
+      || (Array.isArray(usage.referenceEvidence) && usage.referenceEvidence.length)
+      || usage.lastActivityLogAt
+      || (usage.activityCount || 0) > 0
+      || (usage.invocationCount || 0) > 0
+  );
+  if (hasActivityEvidence) return 'stale';
+  const hasInstallationEvidence = Boolean(
+    (Array.isArray(usage.installedInAgents) && usage.installedInAgents.length)
+      || (Array.isArray(usage.installedInProjects) && usage.installedInProjects.length)
+  );
+  if (hasInstallationEvidence) return 'unused_candidate';
+  return usageEvidenceQuality(skill).score < 0.5 ? 'untracked' : 'unused_candidate';
+}
+
+function zombieRecommendation(classification) {
+  if (classification === 'stale') return 'Check the recorded references and recent activity before archiving; the skill may still be intentionally installed.';
+  if (classification === 'untracked') return 'Usage evidence is incomplete. Inspect agent and project configuration before changing or archiving this skill.';
+  return 'Review whether this skill is still needed. Archive or disable it only after checking presets and project references.';
 }
 
 /**
@@ -63,10 +120,9 @@ function sourceProtectionLevel(skill) {
  */
 function computeZombieScore(skill) {
   const usage = skill.usage || {};
-  const tags = skill.tags || [];
 
   // Early return for protected skills
-  if (usage.manuallyPinned || tags.includes('keep') || tags.includes('core') || tags.includes('system')) {
+  if (isProtectedSkill(skill)) {
     return 0.0;
   }
 
@@ -118,14 +174,20 @@ function zombieLevelDescription(level) {
  * @param {Array} skills
  * @returns {Array} zombie findings
  */
-function detectZombies(skills) {
+function detectZombies(skills, options = {}) {
   const findings = [];
+  const thresholdValue = Number(options.threshold);
+  const threshold = Number.isFinite(thresholdValue) ? clamp(thresholdValue, 0, 1) : 0.4;
+  const minConfidenceValue = Number(options.minConfidence);
+  const minConfidence = Number.isFinite(minConfidenceValue) ? clamp(minConfidenceValue, 0, 1) : 0;
 
   for (const skill of skills) {
     const score = computeZombieScore(skill);
-    if (score < 0.4) continue;
+    const evidenceQuality = usageEvidenceQuality(skill);
+    if (score < threshold || evidenceQuality.score < minConfidence) continue;
 
     const level = zombieLevel(score);
+    const classification = zombieClassification(skill, score);
     const participantKey = buildParticipantIdentityKey([skill]);
     const reasons = [];
 
@@ -145,6 +207,10 @@ function detectZombies(skills) {
 
     const reasonText = reasons.join('; ');
     const factorText = factors.join('; ');
+    const referenceEvidence = Array.isArray(usage.referenceEvidence) ? usage.referenceEvidence : [];
+    const referenceText = referenceEvidence.length
+      ? `references=${referenceEvidence.map(item => item.path || item.file || item).join(', ')}`
+      : 'references=none detected';
     const signature = sha256(`zombie:${level}:${Math.round(score * 100)}:${skill.slug || ''}`);
     const id = sha256(`${participantKey}:zombie:zombie-detector:${level}:${signature}`);
 
@@ -155,16 +221,28 @@ function detectZombies(skills) {
       detectorId: 'zombie-detector',
       ruleId: level,
       title: `Zombie candidate: ${skill.name || skill.slug}`,
-      description: `${zombieLevelDescription(level)} Score: ${score.toFixed(2)}. Factors: ${factorText}.`,
+      description: `${zombieLevelDescription(level)} Score: ${score.toFixed(2)}. Classification: ${classification}. Evidence confidence: ${evidenceQuality.level} (${evidenceQuality.score.toFixed(2)}). Factors: ${factorText}.`,
       signature,
       evidence: [{
         file: skill.location?.path || skill.local_path || '',
         text: `${skill.slug}: score=${score.toFixed(2)}, level=${level}, reasons=${reasonText}`,
         anchor: `${skill.slug} zombie ${level}`,
+      }, {
+        file: 'usage-signals',
+        kind: 'usage-summary',
+        classification,
+        confidence: evidenceQuality.score,
+        confidenceLevel: evidenceQuality.level,
+        sources: evidenceQuality.sources,
+        references: referenceEvidence,
+        text: `${classification}; confidence=${evidenceQuality.score.toFixed(2)}; ${referenceText}`,
+        anchor: `${skill.slug} usage evidence`,
       }],
-      recommendation: 'Review whether this skill is still needed. Consider removing from presets or disabling if unused.',
+      recommendation: zombieRecommendation(classification),
       score,
       level,
+      classification,
+      confidence: evidenceQuality.score,
       skills: [skill],
       links: [{ skillId: skill.id, role: 'primary' }],
     });
@@ -175,4 +253,12 @@ function detectZombies(skills) {
   return findings;
 }
 
-module.exports = { computeZombieScore, zombieLevel, zombieLevelDescription, detectZombies, descriptionQuality };
+module.exports = {
+  computeZombieScore,
+  zombieLevel,
+  zombieLevelDescription,
+  detectZombies,
+  descriptionQuality,
+  usageEvidenceQuality,
+  zombieClassification,
+};

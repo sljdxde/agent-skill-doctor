@@ -71,7 +71,7 @@ function writeSkill(root, rel, name) {
 test('main CLI exposes duplicate, risk, conflict, zombie, governance, plan, and apply commands', () => {
   const result = run(['help']);
   assert.equal(result.status, 0);
-  for (const command of ['duplicates', 'risks', 'conflicts', 'zombies', 'governance', 'plan', 'apply']) {
+  for (const command of ['duplicates', 'risks', 'conflicts', 'zombies', 'governance', 'plan', 'apply', 'review']) {
     assert.match(result.stdout, new RegExp(`\\b${command}\\b`));
   }
 });
@@ -259,6 +259,30 @@ test('project-local agent roots are classified as project_local', () => {
   assert.equal(skill.root_type, 'project_local');
 });
 
+test('diagnose records project configuration references for zombie evidence', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'asd-zombie-evidence-'));
+  const home = path.join(temp, 'home');
+  const doctorHome = path.join(temp, 'doctor-home');
+  const skillRoot = path.join(temp, '.codex', 'skills');
+  writeSkill(skillRoot, 'referenced-skill', 'Referenced Skill');
+  fs.writeFileSync(path.join(temp, '.codex', 'settings.json'), JSON.stringify({ skills: ['referenced-skill'] }));
+
+  const result = run(['diagnose', '--root', skillRoot, '--json'], {
+    cwd: temp,
+    env: { AGENT_SKILL_DOCTOR_HOME: doctorHome, HOME: home, USERPROFILE: home },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const data = JSON.parse(result.stdout.slice(result.stdout.indexOf('{')));
+  const skill = data.skills.find(item => item.slug === 'referenced-skill');
+  assert.ok(skill, 'referenced skill should be present');
+  assert.ok(skill.usage.referenceEvidence.some(item => item.path.endsWith('.codex/settings.json')));
+  const finding = data.findings.find(item => item.type === 'zombie' && item.skills.some(item => item.slug === 'referenced-skill'));
+  assert.ok(finding, 'referenced skill should still be reported when stale');
+  const usageEvidence = finding.evidence.find(item => item.kind === 'usage-summary');
+  assert.equal(usageEvidence.classification, 'stale');
+  assert.equal(usageEvidence.confidenceLevel, 'high');
+});
+
 test('apply dry-run filters actions by target skill id', () => {
   const fixture = makeFixture();
   const env = { AGENT_SKILL_DOCTOR_HOME: fixture.home };
@@ -275,4 +299,82 @@ test('apply dry-run filters actions by target skill id', () => {
   const result = JSON.parse(applied.stdout.slice(applied.stdout.indexOf('{')));
   assert.ok(result.actions.length >= 1);
   assert.ok(result.actions.every(action => action.targetSkillId === target));
+});
+
+test('explain defaults to local mode', () => {
+  const fixture = makeFixture();
+  const env = { AGENT_SKILL_DOCTOR_HOME: fixture.home };
+  const diagnosed = run(['diagnose', '--root', fixture.skills, '--json'], { env });
+  assert.equal(diagnosed.status, 0, diagnosed.stderr);
+
+  const explained = run(['explain', '--json', '--lang', 'zh'], { env });
+  assert.equal(explained.status, 0, explained.stderr);
+  const result = JSON.parse(explained.stdout.slice(explained.stdout.indexOf('{')));
+  assert.equal(result.provider, 'local');
+  assert.equal(result.fallback, false);
+  assert.ok(result.findingCount > 0);
+  assert.match(result.summary, /本地模式/);
+});
+
+test('explain falls back locally unless network access is explicit', () => {
+  const fixture = makeFixture();
+  const env = { AGENT_SKILL_DOCTOR_HOME: fixture.home };
+  const diagnosed = run(['diagnose', '--root', fixture.skills, '--json'], { env });
+  assert.equal(diagnosed.status, 0, diagnosed.stderr);
+
+  const explained = run(['explain', '--provider', 'orcarouter', '--json'], { env });
+  assert.equal(explained.status, 0, explained.stderr);
+  const result = JSON.parse(explained.stdout.slice(explained.stdout.indexOf('{')));
+  assert.equal(result.provider, 'local');
+  assert.equal(result.requestedProvider, 'orcarouter');
+  assert.equal(result.fallback, true);
+  assert.equal(result.fallbackReason, 'network_disabled');
+});
+
+test('review --ai defaults to conservative local risk review', () => {
+  const fixture = makeFixture();
+  const env = { AGENT_SKILL_DOCTOR_HOME: fixture.home };
+  const diagnosed = run(['diagnose', '--root', fixture.skills, '--json'], { env });
+  assert.equal(diagnosed.status, 0, diagnosed.stderr);
+
+  const reviewed = run(['review', '--ai', '--json', '--lang', 'zh'], { env });
+  assert.equal(reviewed.status, 0, reviewed.stderr);
+  const result = JSON.parse(reviewed.stdout.slice(reviewed.stdout.indexOf('{')));
+  assert.equal(result.provider, 'local');
+  assert.ok(result.findingCount > 0);
+  assert.ok(result.items.every(item => item.verdict === 'needs_review'));
+});
+
+test('fix --ai emits a local draft without modifying skill files', () => {
+  const fixture = makeFixture();
+  const env = { AGENT_SKILL_DOCTOR_HOME: fixture.home };
+  const diagnosed = run(['diagnose', '--root', fixture.skills, '--json'], { env });
+  assert.equal(diagnosed.status, 0, diagnosed.stderr);
+  const target = path.join(fixture.skills, 'danger', 'SKILL.md');
+  const before = fs.readFileSync(target, 'utf8');
+
+  const drafted = run(['fix', '--ai', '--type', 'governance', '--json', '--lang', 'zh'], { env });
+  assert.equal(drafted.status, 0, drafted.stderr);
+  const result = JSON.parse(drafted.stdout.slice(drafted.stdout.indexOf('{')));
+  assert.equal(result.provider, 'local');
+  assert.ok(result.findingCount > 0);
+  assert.ok(result.items.every(item => item.edits.length === 0 && item.patch === null));
+  assert.equal(fs.readFileSync(target, 'utf8'), before);
+});
+
+test('fix --ai never drafts a README frontmatter patch for a missing SKILL.md', () => {
+  const fixture = makeFixture();
+  const readmeOnly = path.join(fixture.skills, 'readme-only');
+  fs.mkdirSync(readmeOnly, { recursive: true });
+  fs.writeFileSync(path.join(readmeOnly, 'README.md'), '# Readme Only\n\nShort description.\n');
+  const env = { AGENT_SKILL_DOCTOR_HOME: fixture.home };
+  const diagnosed = run(['diagnose', '--root', fixture.skills, '--json'], { env });
+  assert.equal(diagnosed.status, 0, diagnosed.stderr);
+
+  const drafted = run(['fix', '--ai', '--type', 'scan_warning', '--json'], { env });
+  assert.equal(drafted.status, 0, drafted.stderr);
+  const result = JSON.parse(drafted.stdout.slice(drafted.stdout.indexOf('{')));
+  const item = result.items.find(entry => entry.targetPath === readmeOnly);
+  if (item) assert.equal(item.patch, null);
+  assert.equal(fs.readFileSync(path.join(readmeOnly, 'README.md'), 'utf8'), '# Readme Only\n\nShort description.\n');
 });
