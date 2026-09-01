@@ -13,6 +13,7 @@ const { DEFAULT_CONFLICT_RULES } = require('../src/doctor/rules');
 const phase2 = require('../src/doctor/phase2');
 const { detectGovernanceFindings } = require('../src/doctor/governance');
 const { detectFreshnessFindings } = require('../src/doctor/freshness');
+const { isManagedInstallation } = require('../src/doctor/skill-scope');
 const { t, dictionaries } = require('../src/doctor/i18n');
 const { explainFindings, reviewFindings, draftFixes } = require('../src/doctor/llm');
 
@@ -141,6 +142,15 @@ function loadConfig() {
     '~/.claude',
     '~/.cursor',
     '~/.opencode',
+    '~/.config/opencode',
+    '~/.qoder',
+    '~/.qoder-cn',
+    '~/.qoderwork',
+    '~/.qoderworkcn',
+    '~/.codebuddy',
+    '~/.workbuddy',
+    '~/.deepseek',
+    '~/.deepseek-harness',
     '~/.windsurf',
     '~/.aider',
     '~/.continue',
@@ -156,6 +166,14 @@ function loadConfig() {
     '.claude',
     '.cursor',
     '.opencode',
+    '.qoder',
+    '.qoder-cn',
+    '.qoderwork',
+    '.qoderworkcn',
+    '.codebuddy',
+    '.workbuddy',
+    '.deepseek',
+    '.deepseek-harness',
     '.windsurf',
     '.aider',
     '.continue',
@@ -184,6 +202,10 @@ function loadConfig() {
     // Add plugins/ subdirectory if exists (for plugin cache/marketplace)
     const pluginsDir = path.join(expanded, 'plugins');
     if (isDir(pluginsDir)) candidates.push(pluginsDir);
+
+    // WorkBuddy stores connector-provided skills separately from its main skills directory.
+    const connectorSkillsDir = path.join(expanded, 'connectors', 'skills');
+    if (isDir(connectorSkillsDir)) candidates.push(connectorSkillsDir);
   }
 
   // For project-local directories
@@ -193,6 +215,8 @@ function loadConfig() {
 
     const skillsDir = path.join(expanded, 'skills');
     if (isDir(skillsDir)) candidates.push(skillsDir);
+    const connectorSkillsDir = path.join(expanded, 'connectors', 'skills');
+    if (isDir(connectorSkillsDir)) candidates.push(connectorSkillsDir);
   }
 
   return {
@@ -343,7 +367,7 @@ function parseFrontmatter(text) {
   return { data, body, error: null };
 }
 
-function findSkillCandidates(dir, root, depth, maxDepth) {
+function findSkillCandidates(dir, root, depth, maxDepth, options = {}) {
   const out = [];
   if (depth > maxDepth) return out;
   let entries;
@@ -351,13 +375,13 @@ function findSkillCandidates(dir, root, depth, maxDepth) {
   const names = new Set(entries.map(e => e.name));
   const hasSkillMd = names.has('SKILL.md') || names.has('skill.md');
   const hasReadme = names.has('README.md') || names.has('readme.md');
-  if (hasSkillMd || (hasReadme && depth > 0)) {
+  if (hasSkillMd || (options.includeReadmeCandidates && hasReadme && depth > 0)) {
     out.push({ path: normalizePath(dir), root: normalizePath(root), hasSkillMd, hasReadme });
     if (hasSkillMd) return out;
   }
   for (const entry of entries) {
     if (!entry.isDirectory() || SKIP_DIRS.has(entry.name)) continue;
-    out.push(...findSkillCandidates(path.join(dir, entry.name), root, depth + 1, maxDepth));
+    out.push(...findSkillCandidates(path.join(dir, entry.name), root, depth + 1, maxDepth, options));
   }
   return out;
 }
@@ -421,13 +445,14 @@ function rootTypeFor(p) {
   const cwd = canonicalPath(process.cwd());
   if (n === `${home}/.skills-manager` || n.startsWith(`${home}/.skills-manager/`)) return 'central_library';
 
-  const agentDirs = ['.claude', '.codex', '.cursor', '.opencode', '.agent', '.windsurf', '.aider', '.continue', '.cody', '.copilot', '.agents'];
+  const agentDirs = ['.claude', '.codex', '.cursor', '.opencode', '.qoder', '.qoder-cn', '.qoderwork', '.qoderworkcn', '.codebuddy', '.workbuddy', '.deepseek', '.deepseek-harness', '.agent', '.windsurf', '.aider', '.continue', '.cody', '.copilot', '.agents'];
   for (const agentDir of agentDirs) {
     if (n === `${cwd}/${agentDir}` || n.startsWith(`${cwd}/${agentDir}/`)) return 'project_local';
   }
   for (const agentDir of agentDirs) {
     if (n === `${home}/${agentDir}` || n.startsWith(`${home}/${agentDir}/`)) return 'agent_global';
   }
+  if (n === `${home}/.config/opencode` || n.startsWith(`${home}/.config/opencode/`)) return 'agent_global';
   return 'unknown';
 }
 
@@ -436,7 +461,13 @@ function inferAgent(p) {
   if (n.includes('/.claude/')) return 'claude';
   if (n.includes('/.codex/')) return 'codex';
   if (n.includes('/.cursor/')) return 'cursor';
+  if (n.includes('/.config/opencode/')) return 'opencode';
   if (n.includes('/.opencode/')) return 'opencode';
+  if (n.includes('/.qoder') || n.includes('/.qoderwork')) return 'qoder';
+  if (n.includes('/.codebuddy/')) return 'codebuddy';
+  if (n.includes('/.workbuddy/')) return 'workbuddy';
+  if (n.includes('/.deepseek-harness/')) return 'deepseekHarness';
+  if (n.includes('/.deepseek/')) return 'deepseek';
   if (n.includes('/.windsurf/')) return 'windsurf';
   if (n.includes('/.aider/')) return 'aider';
   if (n.includes('/.continue/')) return 'continue';
@@ -477,6 +508,8 @@ function usageSignalsFor(candidatePath, rootType, agent, modifiedAt, frontmatter
     .map(reference => ({ path: reference, kind: 'frontmatter-reference', matchedBy: 'metadata' }));
   const presetValue = Number(frontmatter.preset_count || frontmatter.presetCount);
   const presetCount = Number.isFinite(presetValue) && presetValue > 0 ? presetValue : explicitPresets.length;
+  const hasPresetCount = Object.hasOwn(frontmatter, 'preset_count') || Object.hasOwn(frontmatter, 'presetCount');
+  const hasActivityLog = Object.hasOwn(frontmatter, 'last_activity_at') || Object.hasOwn(frontmatter, 'lastActivityLogAt');
   const signalSources = [];
   if (isAgentGlobal || explicitAgents.length) signalSources.push('agent_installation');
   if (isProjectLocal || explicitProjects.length) signalSources.push('project_installation');
@@ -494,6 +527,9 @@ function usageSignalsFor(candidatePath, rootType, agent, modifiedAt, frontmatter
     confidence: explicitAgents.length || explicitProjects.length || explicitPresets.length || explicitReferences.length
       ? 0.85
       : (isAgentGlobal || isProjectLocal ? 0.6 : 0.3),
+    presetCountKnown: hasPresetCount,
+    activityLogKnown: hasActivityLog,
+    activityEvidenceAvailable: hasPresetCount || hasActivityLog || explicitPresets.length > 0 || explicitReferences.length > 0,
   };
 }
 
@@ -653,7 +689,7 @@ function scanRoots(roots, options = {}) {
   for (const raw of roots) {
     const root = normalizePath(raw);
     if (!fs.existsSync(root)) continue;
-    for (const c of findSkillCandidates(root, root, 0, options.maxDepth || 6)) candidates.set(c.path, c);
+    for (const c of findSkillCandidates(root, root, 0, options.maxDepth || 6, { includeReadmeCandidates: !!options.full })) candidates.set(c.path, c);
   }
   const skills = [...candidates.values()].map(parseSkillCandidate);
   const references = buildUsageReferenceIndex(skills);
@@ -778,9 +814,9 @@ function descriptionQualityScore(skill) {
   if (desc.length < 20) { score -= 20; issues.push('short-description'); }
   const lower = desc.toLowerCase();
   // Check for trigger/usage condition
-  if (!/\b(when|use |trigger|if |run |invoke|install|enable)\b/.test(lower)) { score -= 15; issues.push('no-trigger-condition'); }
+  if (!/\b(when|use |trigger|if |run |invoke|install|enable)\b|(?:当|如果|遇到|需要|用户).{0,24}(?:时|时使用)|(?:用于|适用于|触发|调用)/.test(lower)) { score -= 15; issues.push('no-trigger-condition'); }
   // Check for I/O description
-  if (!/\b(input|output|return|result|respond|answer|generate|create|produce)\b/.test(lower)) { score -= 10; issues.push('no-io-description'); }
+  if (!/\b(input|output|return|result|respond|answer|generate|create|produce)\b|(?:输入|输出|生成|创建|返回|提供|处理|读取|写入|分析|检查|诊断|管理|转换|支持)/.test(lower)) { score -= 10; issues.push('no-io-description'); }
   // Check for high-risk content in skill without risk description
   const hasRisk = /\b(rm |delete|remove|exec|shell|subprocess|curl|wget|sudo|env|token|key|secret|password|credential)\b/.test(lower);
   const hasRiskDesc = /\b(risk|danger|careful|caution|warning|safe|security|destructive|irreversible)\b/.test(lower);
@@ -873,9 +909,32 @@ function driftFindingToDbFinding(drift) {
   };
 }
 
+function maintenanceScopeKey(skill) {
+  const agent = skill.location?.agent || skill.agent || '';
+  if (agent) return `agent:${agent}`;
+  const rootType = skill.location?.rootType || skill.root_type || 'unknown';
+  const root = skill.location?.root || skill.root || path.dirname(skill.location?.path || skill.local_path || '');
+  return `${rootType}:${normalizePath(root)}`;
+}
+
+function splitByMaintenanceScope(skills) {
+  const scopes = new Map();
+  for (const skill of skills) {
+    const key = maintenanceScopeKey(skill);
+    if (!scopes.has(key)) scopes.set(key, []);
+    scopes.get(key).push(skill);
+  }
+  return [...scopes.values()];
+}
+
 function runPhase2Analysis(db, skills) {
-  const groups = phase2.detectDuplicateGroups(skills);
-  const drifts = phase2.detectVersionDrift(skills);
+  const userManagedSkills = skills.filter(skill => !isManagedInstallation(skill));
+  const groups = [];
+  const drifts = [];
+  for (const scopeSkills of splitByMaintenanceScope(userManagedSkills)) {
+    groups.push(...phase2.detectDuplicateGroups(scopeSkills));
+    drifts.push(...phase2.detectVersionDrift(scopeSkills));
+  }
   for (const group of groups) {
     upsertDuplicateGroup(db, group);
     const made = duplicateFindingFromGroup(group);
@@ -924,8 +983,8 @@ function reconcileDiagnoseState(db, roots, startedAt, seenFindingIds, seenGroupI
   }
 }
 
-function runGovernanceAnalysis(db, skills) {
-  const findings = detectGovernanceFindings(skills);
+function runGovernanceAnalysis(db, skills, options = {}) {
+  const findings = detectGovernanceFindings(skills, options);
   for (const finding of findings) upsertFinding(db, finding, finding.links || []);
   return findings;
 }
@@ -943,7 +1002,7 @@ function recordRun(db, run) {
 function listSkills(db) { return db.prepare("SELECT * FROM skill_records WHERE status IS NULL OR status <> 'missing' ORDER BY slug ASC").all(); }
 function listFindings(db, includeIgnored) { return db.prepare(`SELECT * FROM findings ${includeIgnored ? '' : 'WHERE ignored = 0'} ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 WHEN 'info' THEN 4 ELSE 5 END, type ASC, title ASC`).all(); }
 function listIgnored(db) { return db.prepare('SELECT * FROM findings WHERE ignored = 1 ORDER BY ignored_at DESC').all(); }
-function getFindingSkills(db, findingId) { return db.prepare('SELECT fs.*, sr.slug, sr.name, sr.local_path FROM finding_skills fs JOIN skill_records sr ON sr.id = fs.skill_id WHERE fs.finding_id = ? ORDER BY fs.role ASC, sr.slug ASC').all(findingId); }
+function getFindingSkills(db, findingId) { return db.prepare('SELECT fs.*, sr.slug, sr.name, sr.local_path, sr.root_type, sr.agent FROM finding_skills fs JOIN skill_records sr ON sr.id = fs.skill_id WHERE fs.finding_id = ? ORDER BY fs.role ASC, sr.slug ASC').all(findingId); }
 function setIgnored(db, id, ignored, reason, at) { return db.prepare('UPDATE findings SET ignored=?, ignored_reason=?, ignored_at=?, updated_at=? WHERE id=?').run(ignored ? 1 : 0, ignored ? (reason || null) : null, ignored ? at : null, at, id).changes || 0; }
 function listFindingSkills(db) { return db.prepare('SELECT * FROM finding_skills ORDER BY finding_id ASC, role ASC, skill_id ASC').all(); }
 function listDuplicateGroups(db) {
@@ -1102,6 +1161,7 @@ function renderHtml(data, lang, reportPath) {
   const skills = (data.skills || []).map(s => {
     const raw = typeof s.raw_json === 'string' ? JSON.parse(s.raw_json) : (s.raw_json || {});
     return {
+      id: s.id || raw.id || '',
       name: s.name || raw.name || s.slug || '-',
       slug: s.slug || raw.slug || '-',
       path: s.local_path || raw.location?.path || '',
@@ -1115,6 +1175,8 @@ function renderHtml(data, lang, reportPath) {
       classification: classifySkill(s),
     };
   });
+
+  const skillById = new Map(skills.filter(s => s.id).map(s => [s.id, s]));
 
   // Group skills by classification
   const classOrder = ['official', 'plugin', 'standalone', 'thirdParty', 'unknown'];
@@ -1184,7 +1246,7 @@ function renderHtml(data, lang, reportPath) {
     { key: 'report.descriptionQualityFindings', descKey: 'dashboard.descriptionQualityFindings.desc', value: data.summary.descriptionQualityFindings, color: '#6b7280', tooltipTitle: 'tooltip.descriptionQuality.title', tooltipText: 'tooltip.descriptionQuality.text', filterFn: f => f.type === 'description_quality', informational: true },
   ];
 
-  const summaryCards = cardDefs.map(c => {
+  const renderSummaryCard = c => {
     const tip = c.tooltipTitle ? tooltip(c.tooltipTitle, c.tooltipText) : '';
     // Build collapsible detail list for this card type
     let detailSection = '';
@@ -1206,7 +1268,22 @@ function renderHtml(data, lang, reportPath) {
     const infoBadge = c.informational ? `<span style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#6b728033;color:var(--muted);font-size:0.6rem;font-weight:700;margin-left:0.25rem;cursor:help" title="${lang === 'zh' ? '仅供参考，不参与技能优化决策' : 'Informational only, not actionable'}">?</span>` : '';
     const cardContent = `<div class="stat-value">${c.value}</div><div class="stat-label">${D(c.key)} ${tip}${infoBadge}</div><div class="stat-desc">${Dn(c.descKey)}</div>${detailSection}`;
     return `<div class="stat-card" style="border-left:4px solid ${c.color}${c.informational ? ';opacity:0.75' : ''}">${cardContent}</div>`;
-  }).join('\n');
+  };
+  const summaryCards = cardDefs.slice(0, 4).map(renderSummaryCard).join('\n');
+  const secondaryCards = cardDefs.slice(4).map(renderSummaryCard).join('\n');
+
+  const severityRank = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
+  const priorityFindings = [...(data.findings || [])]
+    .filter(f => ['critical', 'high'].includes(f.severity))
+    .sort((a, b) => (severityRank[b.severity] || 0) - (severityRank[a.severity] || 0))
+    .slice(0, 3);
+  const priorityHtml = priorityFindings.length
+    ? `<section class="priority-panel" aria-labelledby="priority-title">
+        <div class="priority-count"><span class="priority-number">${data.summary.bySeverity.critical || 0}</span><span class="priority-caption"><span data-lang="en">critical</span><span data-lang="zh">严重</span></span></div>
+        <div class="priority-count"><span class="priority-number">${data.summary.bySeverity.high || 0}</span><span class="priority-caption"><span data-lang="en">high</span><span data-lang="zh">高风险</span></span></div>
+        <div class="priority-copy"><p id="priority-title" class="section-kicker"><span data-lang="en">Start here</span><span data-lang="zh">先处理这里</span></p><h3>${translateTitle(priorityFindings[0].title)}</h3><p>${escapeHtml(priorityFindings[0].description || priorityFindings[0].recommendation || '')}</p></div>
+      </section>`
+    : `<section class="priority-panel priority-clear"><p class="section-kicker"><span data-lang="en">No critical or high findings</span><span data-lang="zh">没有严重或高风险发现</span></p><p><span data-lang="en">The report can be reviewed from the medium-priority queue below.</span><span data-lang="zh">可以从下方的中优先级队列开始复核。</span></p></section>`;
 
   // Severity bar
   const severityBar = ['critical', 'high', 'medium', 'low', 'info'].map(sev => {
@@ -1232,30 +1309,16 @@ function renderHtml(data, lang, reportPath) {
 
   // Step 1: Conflicts
   const conflictFindings = data.findings.filter(f => f.type === 'conflict');
-  // Step 2: Version drift + duplicates — build specific keep/remove recommendations
+  // Step 2: Version drift + duplicates — candidates need human verification before any change.
   const driftFindings = data.findings.filter(f => f.type === 'version_drift');
   const dupGroups = data.duplicateGroups || [];
   const dupMembers = data.duplicateGroupMembers || [];
 
-  // For each duplicate group, recommend which to keep
-  const dupRecommendations = dupGroups.map(g => {
+  const dupCandidates = dupGroups.map(g => {
     const members = dupMembers.filter(m => m.group_id === g.id).map(m => ({
       ...m, ...(skillInfoMap[m.skill_id] || { name: m.skill_id, slug: '', path: '' })
     }));
-    // Heuristic: prefer agent_global > central_library > project_local; prefer canonical role
-    const rootPriority = { agent_global: 0, central_library: 1, project_local: 2, unknown: 3 };
-    const sorted = members.sort((a, b) => {
-      const skillA = data.skills.find(s => s.id === a.skill_id);
-      const skillB = data.skills.find(s => s.id === b.skill_id);
-      const rtA = rootPriority[skillA?.root_type] ?? 3;
-      const rtB = rootPriority[skillB?.root_type] ?? 3;
-      if (a.role === 'canonical' && b.role !== 'canonical') return -1;
-      if (b.role === 'canonical' && a.role !== 'canonical') return 1;
-      return rtA - rtB;
-    });
-    const keep = sorted[0];
-    const remove = sorted.slice(1);
-    return { group: g, keep, remove, members: sorted };
+    return { group: g, members: members.sort((a, b) => String(a.path || a.slug).localeCompare(String(b.path || b.slug))) };
   });
 
   // Step 3: Zombies — sorted by score descending
@@ -1275,6 +1338,7 @@ function renderHtml(data, lang, reportPath) {
   const stepStyle = 'padding:0.4rem 0.75rem;border-radius:6px;font-size:0.85rem;margin-bottom:0.5rem';
 
   let pathHtml = '';
+  let freshnessStepHtml = '';
 
   // Step 4: Freshness / update detection
   const freshnessFindings = data.findings.filter(f => f.type === 'freshness');
@@ -1288,7 +1352,7 @@ function renderHtml(data, lang, reportPath) {
     }).join('');
     if (freshCount > 15) freshDetail += `<div style="font-size:0.75rem;color:var(--muted)">... ${lang === 'zh' ? '还有' : 'and'} ${freshCount - 15} ${lang === 'zh' ? '个' : 'more'}</div>`;
   }
-  pathHtml += `<div style="${stepStyle};background:${freshCount > 0 ? '#06b6d4' : '#10b981'}22;border-left:4px solid ${freshCount > 0 ? '#06b6d4' : '#10b981'}">
+  freshnessStepHtml = `<div style="${stepStyle};background:${freshCount > 0 ? '#06b6d4' : '#10b981'}22;border-left:4px solid ${freshCount > 0 ? '#06b6d4' : '#10b981'}">
     <strong>${lang === 'zh' ? '第 4 步：更新检测' : 'Step 4: Update Detection'}</strong> <span class="tag">${freshCount}</span><br>
     <span style="color:var(--muted);font-size:0.8rem">${freshCount === 0 ? (lang === 'zh' ? '所有技能均为最新。' : 'All skills are up to date.') : (lang === 'zh' ? '检查是否有技能需要从上游更新。使用 --check-upstream 可联网验证。' : 'Check if any skills need updating from upstream. Use --check-upstream for online verification.')}</span>
     ${freshDetail ? `<details style="margin-top:0.5rem"><summary style="cursor:pointer;font-size:0.8rem;color:var(--muted)">${lang === 'zh' ? '查看详情' : 'View details'}</summary>${freshDetail}</details>` : ''}
@@ -1298,6 +1362,8 @@ function renderHtml(data, lang, reportPath) {
   const dqFindings = data.findings.filter(f => f.type === 'description_quality');
   // Step 6: Risk (informational only)
   const riskFindings = data.findings.filter(f => f.type === 'risk');
+  const governanceFindings = data.findings.filter(f => f.type === 'governance');
+  const scanWarningFindings = data.findings.filter(f => f.type === 'scan_warning');
 
   // Step 1: Conflicts
   const conflictCount = conflictFindings.length;
@@ -1307,39 +1373,28 @@ function renderHtml(data, lang, reportPath) {
   </div>`;
 
   // Step 2: Duplicates + Version Drift
-  const dupDriftCount = dupRecommendations.length + driftFindings.length;
+  const dupDriftCount = dupCandidates.length + driftFindings.length;
   let dupDriftDetail = '';
   if (dupDriftCount > 0) {
-    for (const rec of dupRecommendations) {
-      const strat = { exact_duplicate: lang === 'zh' ? '完全重复' : 'Exact duplicate', same_source_duplicate: lang === 'zh' ? '同源重复' : 'Same source', same_name_duplicate: lang === 'zh' ? '同名重复' : 'Same name' }[rec.group.strategy] || rec.group.strategy;
+    for (const rec of dupCandidates) {
+      const strat = { exact_duplicate: lang === 'zh' ? '完全重复' : 'Exact duplicate', same_source_duplicate: lang === 'zh' ? '同源重复' : 'Same source' }[rec.group.strategy] || rec.group.strategy;
       dupDriftDetail += `<div style="margin:0.5rem 0;padding:0.5rem;background:var(--bg);border-radius:6px;font-size:0.8rem">
         <strong>${strat}</strong> (${lang === 'zh' ? '置信度' : 'Confidence'}: ${rec.group.confidence})<br>`;
-      for (const m of rec.members) {
-        const isKeep = m === rec.keep;
-        dupDriftDetail += `<div style="margin:0.2rem 0">${isKeep ? '<span style="color:#10b981;font-weight:700">&#10003; ' + (lang === 'zh' ? '保留' : 'KEEP') + '</span>' : '<span style="color:#ef4444;font-weight:700">&#10007; ' + (lang === 'zh' ? '移除' : 'REMOVE') + '</span>'} <code>${escapeHtml(m.slug || m.name)}</code> <small style="color:var(--muted)">${escapeHtml(m.path)}</small></div>`;
-      }
+      for (const m of rec.members) dupDriftDetail += `<div style="margin:0.2rem 0"><span style="color:var(--muted);font-weight:700">${lang === 'zh' ? '候选' : 'CANDIDATE'}</span> <code>${escapeHtml(m.slug || m.name)}</code> <small style="color:var(--muted)">${escapeHtml(m.path)}</small></div>`;
       dupDriftDetail += `</div>`;
     }
     for (const f of driftFindings) {
       const driftSkills = (f.skills || []).map(s => ({ ...s, ...(skillInfoMap[s.id] || {}) }));
-      // Prefer agent_global version
-      const sorted = driftSkills.sort((a, b) => {
-        const rtA = a.root_type === 'agent_global' ? 0 : 1;
-        const rtB = b.root_type === 'agent_global' ? 0 : 1;
-        return rtA - rtB;
-      });
+      const sorted = driftSkills.sort((a, b) => String(a.path || a.local_path || a.slug).localeCompare(String(b.path || b.local_path || b.slug)));
       dupDriftDetail += `<div style="margin:0.5rem 0;padding:0.5rem;background:var(--bg);border-radius:6px;font-size:0.8rem">
         <strong>${lang === 'zh' ? '版本漂移' : 'Version Drift'}</strong>: <code>${escapeHtml(sorted[0]?.slug || '')}</code><br>`;
-      for (const s of sorted) {
-        const isKeep = s === sorted[0];
-        dupDriftDetail += `<div style="margin:0.2rem 0">${isKeep ? '<span style="color:#10b981;font-weight:700">&#10003; ' + (lang === 'zh' ? '保留' : 'KEEP') + '</span>' : '<span style="color:#ef4444;font-weight:700">&#10007; ' + (lang === 'zh' ? '移除' : 'REMOVE') + '</span>'} <code>${escapeHtml(s.slug || s.name)}</code> <small style="color:var(--muted)">${escapeHtml(s.path || s.local_path || '')}</small></div>`;
-      }
+      for (const s of sorted) dupDriftDetail += `<div style="margin:0.2rem 0"><span style="color:var(--muted);font-weight:700">${lang === 'zh' ? '候选' : 'CANDIDATE'}</span> <code>${escapeHtml(s.slug || s.name)}</code> <small style="color:var(--muted)">${escapeHtml(s.path || s.local_path || '')}</small></div>`;
       dupDriftDetail += `</div>`;
     }
   }
   pathHtml += `<div style="${stepStyle};background:${dupDriftCount > 0 ? '#f59e0b' : '#10b981'}22;border-left:4px solid ${dupDriftCount > 0 ? '#f59e0b' : '#10b981'}">
     <strong>${lang === 'zh' ? '第 2 步：重复技能 & 版本漂移' : 'Step 2: Duplicates & Version Drift'}</strong> <span class="tag">${dupDriftCount}</span><br>
-    <span style="color:var(--muted);font-size:0.8rem">${dupDriftCount === 0 ? (lang === 'zh' ? '无重复或漂移。' : 'No duplicates or drift found.') : (lang === 'zh' ? '保留推荐版本，移除冗余副本。' : 'Keep recommended versions, remove redundant copies.')}</span>
+    <span style="color:var(--muted);font-size:0.8rem">${dupDriftCount === 0 ? (lang === 'zh' ? '无重复或漂移。' : 'No duplicates or drift found.') : (lang === 'zh' ? '仅列出候选项；先核对用途、引用与安装范围，未确认前不移动、不禁用、不删除。' : 'Candidates only. Verify usage, references, and installation scope; do not move, disable, or delete anything before confirmation.')}</span>
     ${dupDriftDetail ? `<details style="margin-top:0.5rem"><summary style="cursor:pointer;font-size:0.8rem;color:var(--muted)">${lang === 'zh' ? '查看详情' : 'View details'}</summary>${dupDriftDetail}</details>` : ''}
   </div>`;
 
@@ -1366,9 +1421,12 @@ function renderHtml(data, lang, reportPath) {
   }
   pathHtml += `<div style="${stepStyle};background:${zombieTotal > 0 ? '#f59e0b' : '#10b981'}22;border-left:4px solid ${zombieTotal > 0 ? '#f59e0b' : '#10b981'}">
     <strong>${lang === 'zh' ? '第 3 步：僵尸技能' : 'Step 3: Zombie Skills'}</strong> <span class="tag">${zombieTotal}</span><br>
-    <span style="color:var(--muted);font-size:0.8rem">${zombieTotal === 0 ? (lang === 'zh' ? '无僵尸技能。' : 'No zombie skills found.') : (lang === 'zh' ? '先核查引用和活动证据，再决定归档或禁用。' : 'Check references and activity evidence before archiving or disabling.')}</span>
+    <span style="color:var(--muted);font-size:0.8rem">${zombieTotal === 0 ? (lang === 'zh' ? '无僵尸技能。' : 'No zombie skills found.') : (lang === 'zh' ? '先复核高分候选的使用证据；低分候选默认保留并持续观察。' : 'Review activity evidence for high-score candidates first; keep low-score candidates by default and monitor them.')}</span>
     ${zombieDetail ? `<details style="margin-top:0.5rem"><summary style="cursor:pointer;font-size:0.8rem;color:var(--muted)">${lang === 'zh' ? '查看详情' : 'View details'}</summary>${zombieDetail}</details>` : ''}
   </div>`;
+
+  // Keep the remediation path in the same order as the numbered steps.
+  pathHtml += freshnessStepHtml;
 
   // Step 4: Description quality
   const dqCount = dqFindings.length;
@@ -1384,38 +1442,42 @@ function renderHtml(data, lang, reportPath) {
     <span style="color:var(--muted);font-size:0.8rem">${riskCount === 0 ? (lang === 'zh' ? '无风险发现。' : 'No risk findings.') : (lang === 'zh' ? '风险是技能本身需要的权限，无需修复，仅作标注。' : 'Risks are inherent permissions required by skills. No fix needed, just awareness.')}</span>
   </div>`;
 
-  // Agent prompt for duplicates/drift cleanup
-  let dupDriftAgentPrompt = '';
-  if (dupDriftCount > 0) {
-    const removeList = [];
-    for (const rec of dupRecommendations) {
-      for (const m of rec.remove) removeList.push(m.path || m.slug || m.name);
-    }
-    for (const f of driftFindings) {
-      const driftSkills = (f.skills || []).sort((a, b) => (a.root_type === 'agent_global' ? 0 : 1) - (b.root_type === 'agent_global' ? 0 : 1));
-      for (const s of driftSkills.slice(1)) removeList.push(s.path || s.local_path || s.slug);
-    }
-    if (removeList.length > 0) {
-      const promptEn = `Please remove the following redundant skill copies:${pathHintEn}\n\nRemove these paths:\n${removeList.map(p => `- ${p}`).join('\n')}\n\nKeep the recommended versions listed in the diagnostic report.`;
-      const promptZh = `请移除以下冗余技能副本：${pathHintZh}\n\n移除以下路径：\n${removeList.map(p => `- ${p}`).join('\n')}\n\n保留诊断报告中推荐的版本。`;
-      dupDriftAgentPrompt = `<h3 style="font-size:0.95rem;margin:1rem 0 0.5rem;color:var(--muted)">${lang === 'zh' ? '重复/漂移清理提示词' : 'Duplicates/Drift Cleanup Prompt'}</h3><div class="prompt-block"><pre class="prompt"><span data-lang="en">${escapeHtml(promptEn)}</span><span data-lang="zh">${escapeHtml(promptZh)}</span></pre><button class="copy-btn" onclick="copyPrompt(this)">${D('fix.copyAgentPrompt')}</button></div>`;
-    }
-  }
+  // Step 7: Governance metadata
+  const governanceCount = governanceFindings.length;
+  pathHtml += `<div style="${stepStyle};background:${governanceCount > 0 ? '#0f766e' : '#10b981'}22;border-left:4px solid ${governanceCount > 0 ? '#0f766e' : '#10b981'}">
+    <strong>${lang === 'zh' ? '第 7 步：治理元数据' : 'Step 7: Governance Metadata'}</strong> <span class="tag">${governanceCount}</span><br>
+    <span style="color:var(--muted);font-size:0.8rem">${governanceCount === 0 ? (lang === 'zh' ? '治理元数据完整。' : 'Governance metadata is complete.') : (lang === 'zh' ? '只补充已确认缺失的元数据，先输出差异，不直接改写。' : 'Only propose confirmed missing metadata; show a diff before any change.')}</span>
+  </div>`;
 
-  // Agent prompt for zombie cleanup (sorted by score desc)
-  let zombieAgentPrompt = '';
-  if (zombieTotal > 0) {
-    const zombieList = allZombies.map(z => {
-      const score = (z.finding.score || 0).toFixed(2);
-      const p = z.skill?.path || z.skill?.local_path || z.skill?.slug || z.skill?.name || '';
-      return `- ${p} (score: ${score})`;
-    });
-    const promptEn = `Please review the following zombie skills and decide which to remove or archive:${pathHintEn}\n\nFor each skill:\n- score >= 0.7: recommend removing\n- score 0.4-0.7: review and decide\n- Keep skills you actively use or plan to use\n\nZombie skills (sorted by score, higher = more likely zombie):\n${zombieList.join('\n')}`;
-    const promptZh = `请审查以下僵尸技能，决定哪些需要移除或归档：${pathHintZh}\n\n对于每个技能：\n- 评分 >= 0.7：建议移除\n- 评分 0.4-0.7：审查后决定\n- 保留你正在使用或计划使用的技能\n\n僵尸技能（按评分排序，分数越高越可能是僵尸）：\n${zombieList.join('\n')}`;
-    zombieAgentPrompt = `<h3 style="font-size:0.95rem;margin:1rem 0 0.5rem;color:var(--muted)">${lang === 'zh' ? '僵尸技能清理提示词' : 'Zombie Skills Cleanup Prompt'}</h3><div class="prompt-block"><pre class="prompt"><span data-lang="en">${escapeHtml(promptEn)}</span><span data-lang="zh">${escapeHtml(promptZh)}</span></pre><button class="copy-btn" onclick="copyPrompt(this)">${D('fix.copyAgentPrompt')}</button></div>`;
-  }
+  // Step 8: Scan structure
+  const scanWarningCount = scanWarningFindings.length;
+  pathHtml += `<div style="${stepStyle};background:${scanWarningCount > 0 ? '#64748b' : '#10b981'}22;border-left:4px solid ${scanWarningCount > 0 ? '#64748b' : '#10b981'}">
+    <strong>${lang === 'zh' ? '第 8 步：结构扫描' : 'Step 8: Scan Structure'}</strong> <span class="tag">${scanWarningCount}</span><br>
+    <span style="color:var(--muted);font-size:0.8rem">${scanWarningCount === 0 ? (lang === 'zh' ? '技能结构正常。' : 'Skill structure is valid.') : (lang === 'zh' ? '先确认目录和 frontmatter 的真实加载方式，再提出最小结构修复。' : 'Confirm how the directory and frontmatter are loaded before proposing the smallest structural fix.')}</span>
+  </div>`;
 
-  const remediationPathHtml = `<div style="margin-bottom:1.5rem">${pathHtml}</div>${dupDriftAgentPrompt}${zombieAgentPrompt}`;
+  const stepPrompts = [];
+  const promptSafetyEn = 'Treat every finding as a lead, not a fact. First verify the evidence and current references. Do not delete, move, disable, overwrite, reinstall, or edit any skill, configuration, or file. Return a review table and a minimal proposed plan, then wait for explicit confirmation before making changes.';
+  const promptSafetyZh = '将每一项发现视为待核实线索，而非既定事实。先核验证据和当前引用关系；不得删除、移动、禁用、覆盖、重装或编辑任何 Skill、配置或文件。先输出复核表和最小变更方案，得到明确确认后才能修改。';
+  const addStepPrompt = (step, titleEn, titleZh, focusEn, focusZh) => {
+    const promptEn = `Step ${step}: ${titleEn}.${pathHintEn}\n\n${promptSafetyEn}\n\nFocus for this step:\n${focusEn}`;
+    const promptZh = `第 ${step} 步：${titleZh}。${pathHintZh}\n\n${promptSafetyZh}\n\n本步骤重点：\n${focusZh}`;
+    stepPrompts.push(`<details class="step-prompt"><summary><span data-lang="en">Step ${step} Agent Prompt · ${escapeHtml(titleEn)}</span><span data-lang="zh">第 ${step} 步 Agent 提示词 · ${escapeHtml(titleZh)}</span></summary><div class="step-prompt-body"><div class="prompt-block"><pre class="prompt"><span data-lang="en">${escapeHtml(promptEn)}</span><span data-lang="zh">${escapeHtml(promptZh)}</span></pre><button class="copy-btn" onclick="copyPrompt(this)">${D('fix.copyAgentPrompt')}</button></div></div></details>`);
+  };
+
+  if (conflictCount > 0) addStepPrompt(1, 'Conflict Detection', '冲突检测', 'For every reported pair, verify that the instructions truly apply to the same agent, scope, and workflow. Explain the conflict and propose wording or scope boundaries; preserve both skills unless the user explicitly approves a change.', '逐对核实指令是否真正作用于同一个 Agent、安装范围和工作流。说明冲突证据，并提出措辞或作用范围的调整建议；除非用户明确批准，否则保留全部 Skill。');
+  if (dupDriftCount > 0) addStepPrompt(2, 'Duplicates & Version Drift', '重复技能与版本漂移', 'Verify content, upstream source, active references, and installation scope for each candidate. Copies installed for different agents or projects may be intentional. Mark only high-confidence consolidation candidates, with no destructive action proposed.', '逐项核对内容、上游来源、当前引用和安装范围。不同 Agent 或项目的副本可能是有意保留的。只标记高置信度的合并候选，不提出破坏性操作。');
+  if (zombieTotal > 0) addStepPrompt(3, 'Zombie Skills', '僵尸技能', 'Validate activity evidence and current references. Classify each item as keep, monitor, or review-needed; do not infer deletion from a low activity score.', '核验使用证据和当前引用。将每项分类为保留、观察或需要复核；不得因低活跃分数直接推断应删除。');
+  if (freshCount > 0) addStepPrompt(4, 'Update Detection', '更新检测', 'Check the declared source and pin before comparing versions. For each confirmed update, describe compatibility risk and a reversible update plan; do not update or reinstall anything.', '先核对声明的来源与版本锁定，再比较版本。对已确认的更新，说明兼容性风险和可回退的更新方案；不得更新或重装任何内容。');
+  if (dqCount > 0) addStepPrompt(5, 'Description Quality', '描述质量', 'Review only clearly missing or ambiguous descriptions. Propose minimal frontmatter text as a diff, preserve the author\'s intent and language, and do not bulk rewrite descriptions.', '只复核明显缺失或含义模糊的描述。以最小化的 frontmatter 文本差异形式提出建议，保留作者意图和原语言，不得批量改写描述。');
+  if (riskCount > 0) addStepPrompt(6, 'Risk Review', '风险复核', 'Review high-confidence risky commands in context. Distinguish required capability from unsafe execution, and propose guardrails such as confirmation, bounded paths, or dry-run. Do not change any skill during this review.', '结合上下文复核高置信度风险命令，区分必要能力与不安全执行；可提出确认、路径边界或 dry-run 等护栏建议。本次复核不得修改任何 Skill。');
+  if (governanceCount > 0) addStepPrompt(7, 'Governance Metadata', '治理元数据', 'Verify which metadata is required by the target registry or team workflow. Propose only missing fields as a minimal diff; preserve existing values and do not publish, migrate, or rewrite files.', '核实目标 Registry 或团队流程实际要求哪些元数据。只以最小差异提出确实缺失的字段；保留现有值，不发布、不迁移、不改写文件。');
+  if (scanWarningCount > 0) addStepPrompt(8, 'Scan Structure', '结构扫描', 'Verify the loader contract, file encoding, and frontmatter syntax. Propose a reversible minimal fix and a re-scan; do not create, delete, or replace files without confirmation.', '核实加载约定、文件编码和 frontmatter 语法。提出可回退的最小修复和重新扫描步骤；未经确认不得创建、删除或替换文件。');
+
+  const stepPromptsHtml = stepPrompts.length
+    ? `<section class="step-prompts" aria-label="Agent prompts"><h3><span data-lang="en">Step-specific Agent Prompts</span><span data-lang="zh">对应步骤 Agent 提示词</span></h3>${stepPrompts.join('')}</section>`
+    : '';
+  const remediationPathHtml = `<div class="remediation-steps">${pathHtml}</div>${stepPromptsHtml}`;
 
   // Per-finding detail (grouped by type)
   const findingsByType = {};
@@ -1439,24 +1501,47 @@ function renderHtml(data, lang, reportPath) {
           ? Object.entries(skillMap).sort((a, b) => ((b[1][0]?.score || 0) - (a[1][0]?.score || 0)))
           : Object.entries(skillMap);
         const skillRows = sortedEntries.map(([slug, findings]) => {
+          const skillRefs = [];
+          for (const finding of findings) {
+            for (const ref of (finding.skills || [])) {
+              if (ref.slug !== slug) continue;
+              const indexed = skillById.get(ref.skill_id) || {};
+              const path = ref.local_path || indexed.path || '';
+              const key = `${ref.skill_id || slug}:${path}`;
+              if (!skillRefs.some(item => item.key === key)) {
+                skillRefs.push({ key, path, agent: ref.agent || indexed.agent || '', rootType: ref.root_type || indexed.rootType || '' });
+              }
+            }
+          }
+          const skillContext = skillRefs.length
+            ? skillRefs.map(ref => {
+                const details = [];
+                if (ref.path) details.push(`<span class="skill-meta-path"><span class="skill-meta-label">${D('html.path')}</span> <code>${escapeHtml(ref.path)}</code></span>`);
+                if (ref.agent) details.push(`<span class="skill-meta-label">${D('html.agent')}</span> ${escapeHtml(t(`agent.${ref.agent}`, lang, ref.agent))}`);
+                if (ref.rootType) details.push(`<span class="skill-meta-label">${D('html.scope')}</span> ${rootTypeLabel(ref.rootType)}`);
+                return details.length ? `<div class="skill-context">${details.join('<span class="skill-meta-sep">·</span>')}</div>` : '';
+              }).join('')
+            : '';
           const findingItems = findings.map(f => {
             const evidenceList = (f.evidence || []).map(e => `<small style="color:var(--muted)">${escapeHtml(e.file || '')}${e.lineStart ? ':' + e.lineStart : ''}</small>`).join(', ');
             const scoreTag = type === 'zombie' && f.score != null ? ` <span style="color:var(--muted);font-size:0.75rem">(score: ${Number(f.score).toFixed(2)})</span>` : '';
             return `<li><span class="badge badge-${f.severity}" style="font-size:0.6rem;padding:0.1rem 0.35rem">${D(`severity.${f.severity}`)}</span>${scoreTag} ${translateTitle(f.title)} — ${escapeHtml(f.description || '')} ${evidenceList}</li>`;
           }).join('');
-          return `<div class="card-item"><strong>${escapeHtml(slug)}</strong><ul style="margin:0.25rem 0 0.5rem 1.5rem">${findingItems}</ul></div>`;
+          return `<div class="finding-skill"><strong>${escapeHtml(slug)}</strong>${skillContext}<ul>${findingItems}</ul></div>`;
         }).join('');
         const agentLines = Object.entries(skillMap).map(([slug, findings]) => {
+          const locations = [...new Set(findings.flatMap(f => (f.skills || []).filter(s => s.slug === slug).map(s => s.local_path).filter(Boolean)))];
           const detailLines = findings.map(f =>
             `  - [${f.severity}] ${f.title}: ${f.description || ''}${f.recommendation ? ' | ' + f.recommendation : ''}`
           ).join('\n');
-          return `技能: ${slug}\n${detailLines}`;
+          return `技能: ${slug}${locations.length ? `\n目录:\n${locations.map(location => `  - ${location}`).join('\n')}` : ''}\n${detailLines}`;
         }).join('\n\n');
         const agentLinesEn = Object.entries(skillMap).map(([slug, findings]) => {
+          const locations = [...new Set(findings.flatMap(f => (f.skills || []).filter(s => s.slug === slug).map(s => s.local_path).filter(Boolean)))];
           const detailLines = findings.map(f =>
             `  - [${f.severity}] ${f.title}: ${f.description || ''}${f.recommendation ? ' | ' + f.recommendation : ''}`
           ).join('\n');
-          return `Skill: ${slug}\n${detailLines}`;
+          return `Skill: ${slug}${locations.length ? `\nPaths:\n${locations.map(location => `  - ${location}`).join('\n')}` : ''}\n${detailLines}`;
         }).join('\n\n');
         return `
     <details class="finding-card">
@@ -1475,7 +1560,7 @@ function renderHtml(data, lang, reportPath) {
           <div class="fix-ver">
             <h4>${D('fix.agentVersion')}</h4>
             <div class="prompt-block">
-              <pre class="prompt"><span data-lang="en">${escapeHtml(`Please fix all ${type} issues:${pathHintEn}\n\n${agentLinesEn}`)}</span><span data-lang="zh">${escapeHtml(`请修复以下 ${type} 类型的所有问题：${pathHintZh}\n\n${agentLines}`)}</span></pre>
+              <pre class="prompt"><span data-lang="en">${escapeHtml(`Review the following ${type} findings; do not change any files yet.${pathHintEn}\n\nVerify each finding against its evidence and current references. Return a review table with confidence, impact, and the smallest reversible proposal. Do not delete, move, disable, overwrite, reinstall, or edit anything without explicit confirmation.\n\n${agentLinesEn}`)}</span><span data-lang="zh">${escapeHtml(`请复核以下 ${type} 类型的发现；暂时不要修改任何文件。${pathHintZh}\n\n请逐项根据证据和当前引用关系核验，输出包含置信度、影响和最小可回退方案的复核表。未获得明确确认前，不得删除、移动、禁用、覆盖、重装或编辑任何内容。\n\n${agentLines}`)}</span></pre>
               <button class="copy-btn" onclick="copyPrompt(this)">${D('fix.copyAgentPrompt')}</button>
             </div>
           </div>
@@ -1513,53 +1598,93 @@ function renderHtml(data, lang, reportPath) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${t('report.title', lang || 'en')}</title>
 <style>
-:root{--c-critical:#dc2626;--c-high:#ea580c;--c-medium:#ca8a04;--c-low:#2563eb;--c-info:#6b7280;--bg:#f8fafc;--card:#fff;--text:#1e293b;--border:#e2e8f0;--muted:#64748b}
-@media(prefers-color-scheme:dark){:root{--bg:#0f172a;--card:#1e293b;--text:#e2e8f0;--border:#334155;--muted:#94a3b8}}
-*{box-sizing:border-box;margin:0}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;padding:1.5rem}
-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;flex-wrap:wrap;gap:0.5rem}h1{font-size:1.5rem}h2{font-size:1.2rem;margin:1.5rem 0 0.75rem;padding-bottom:0.5rem;border-bottom:2px solid var(--border)}
-.lang-btn{padding:0.4rem 1rem;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;font-size:0.85rem;color:var(--text)}
-.dashboard{display:grid;grid-template-columns:repeat(5,1fr);gap:0.75rem;margin-bottom:1.5rem}@media(max-width:900px){.dashboard{grid-template-columns:repeat(3,1fr)}}@media(max-width:500px){.dashboard{grid-template-columns:repeat(2,1fr)}}
-.stat-card{background:var(--card);border-radius:8px;padding:1rem;box-shadow:0 1px 3px rgba(0,0,0,0.08)}.stat-value{font-size:1.75rem;font-weight:700}.stat-label{font-size:0.8rem;color:var(--muted);margin-top:0.25rem;display:flex;align-items:center;gap:0.3rem}.stat-desc{font-size:0.7rem;color:var(--muted);margin-top:0.35rem;line-height:1.4}
-.card-detail{margin-top:0.5rem;padding-top:0.5rem;border-top:1px solid var(--border);font-size:0.75rem;color:var(--muted)}.card-detail code{font-size:0.7rem;white-space:pre-wrap}
-.card-details{margin-top:0.5rem}.card-details summary{font-size:0.7rem;color:var(--muted);cursor:pointer;padding:0.2rem 0;display:flex}.card-details summary:hover{color:var(--text)}
-.card-detail-list{max-height:200px;overflow-y:auto;padding:0.25rem 0}.card-item{font-size:0.75rem;padding:0.2rem 0;display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap}.card-item-skills{color:var(--muted);font-size:0.7rem}
-.severity-bar{display:flex;height:10px;border-radius:5px;overflow:hidden;background:var(--border);margin:0.75rem 0}.bar-seg{height:100%}.bar-critical{background:var(--c-critical)}.bar-high{background:var(--c-high)}.bar-medium{background:var(--c-medium)}.bar-low{background:var(--c-low)}.bar-info{background:var(--c-info)}
-.legend{display:flex;flex-wrap:wrap;gap:0.75rem;font-size:0.8rem;color:var(--muted);margin-bottom:1rem}.legend-item{display:flex;align-items:center;gap:0.3rem}.dot{width:10px;height:10px;border-radius:50%;display:inline-block}
-.finding-card{background:var(--card);border:1px solid var(--border);border-radius:8px;margin-bottom:0.5rem;overflow:hidden}summary{padding:0.75rem 1rem;cursor:pointer;display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap}summary:hover{background:rgba(0,0,0,0.02)}
-.badge{font-size:0.7rem;padding:0.15rem 0.5rem;border-radius:4px;color:#fff;font-weight:600;text-transform:uppercase}.badge-critical{background:var(--c-critical)}.badge-high{background:var(--c-high)}.badge-medium{background:var(--c-medium)}.badge-low{background:var(--c-low)}.badge-info{background:var(--c-info)}
-.finding-title{font-weight:600;flex:1}.tag{font-size:0.7rem;padding:0.1rem 0.4rem;border-radius:3px;background:var(--border);color:var(--muted)}.tag-ignored{background:#fef3c7;color:#92400e}
-.finding-body{padding:0.75rem 1rem;border-top:1px solid var(--border);font-size:0.9rem}.finding-body p{margin:0.5rem 0}.finding-body ul{margin:0.5rem 0 0.5rem 1.5rem}.finding-id{color:var(--muted);margin-top:0.5rem}
-.fix-versions{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:0.75rem}.fix-ver h4{font-size:0.8rem;color:var(--muted);margin-bottom:0.5rem;text-transform:uppercase}
-.dupe-table{width:100%;border-collapse:collapse;font-size:0.85rem;margin-top:0.5rem}th,td{padding:0.5rem 0.75rem;border:1px solid var(--border);text-align:left}th{background:var(--card);font-weight:600}
-.guide-card{background:var(--card);border:1px solid var(--border);border-radius:8px;margin-bottom:0.5rem}summary{font-weight:600}.guide-body{padding:0.75rem 1rem;border-top:1px solid var(--border);font-size:0.9rem}
-.steps{background:var(--bg);padding:0.75rem;border-radius:6px;white-space:pre-wrap;font-size:0.85rem;margin:0.5rem 0}
-.prompt-block{position:relative;margin-top:0.5rem}.prompt{background:#1e293b;color:#e2e8f0;padding:0.75rem;border-radius:6px;font-size:0.8rem;white-space:pre-wrap;overflow-x:auto}
-.copy-btn{position:absolute;top:0.5rem;right:0.5rem;padding:0.25rem 0.6rem;font-size:0.75rem;border:none;border-radius:4px;background:rgba(255,255,255,0.15);color:#e2e8f0;cursor:pointer}.copy-btn:hover{background:rgba(255,255,255,0.25)}
-.info-card{background:var(--card);border:1px solid var(--border);border-radius:8px;margin-bottom:1rem}summary{font-weight:600}.info-body{padding:0.75rem 1rem;border-top:1px solid var(--border);font-size:0.9rem}.info-body p{margin:0.5rem 0;padding-left:1rem;border-left:3px solid var(--border)}
-.guide-section{margin:0.75rem 0}.guide-section h4{font-size:0.85rem;color:var(--muted);margin-bottom:0.5rem;text-transform:uppercase;letter-spacing:0.5px}
-.cause{background:var(--bg);padding:0.75rem;border-radius:6px;white-space:pre-wrap;font-size:0.85rem;margin:0.5rem 0;border-left:3px solid var(--c-medium)}
-.example{background:var(--bg);padding:0.75rem;border-radius:6px;white-space:pre-wrap;font-size:0.85rem;margin:0.5rem 0;border-left:3px solid var(--c-low)}
-.tip-wrap{position:relative;display:inline-flex;align-items:center}.tip-icon{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:var(--border);color:var(--muted);font-size:0.65rem;font-weight:700;cursor:help;margin-left:0.25rem}
-.tip-box{display:none;position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:0.75rem;font-size:0.8rem;width:320px;z-index:10;box-shadow:0 4px 12px rgba(0,0,0,0.12);line-height:1.5;white-space:normal}
-.tip-wrap:hover .tip-box{display:block}
-.scan-class-legend{display:flex;flex-wrap:wrap;gap:0.75rem;font-size:0.8rem;color:var(--muted);margin-bottom:0.75rem}
-.root-card{background:var(--card);border:1px solid var(--border);border-radius:8px;margin-bottom:0.5rem;overflow:hidden}.root-card summary{padding:0.6rem 1rem;cursor:pointer;font-size:0.85rem;display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap}.root-card summary:hover{background:var(--bg)}.root-card .root-path{font-family:monospace;font-size:0.8rem;font-weight:600;word-break:break-all}.root-card .tag{font-size:0.65rem}.root-body{padding:0 1rem 0.75rem;border-top:1px solid var(--border)}.root-empty{padding:0.6rem 1rem;font-size:0.8rem;color:var(--muted);font-style:italic}
-.skill-table{width:100%;border-collapse:collapse;font-size:0.8rem;margin-top:0.5rem}th,td{padding:0.4rem 0.6rem;border:1px solid var(--border);text-align:left}th{background:var(--bg);font-weight:600;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.3px}.skill-table code{font-size:0.75rem;word-break:break-all}.skill-table .skill-name{font-weight:600}
-footer{text-align:center;color:var(--muted);font-size:0.8rem;margin-top:2rem;padding-top:1rem;border-top:1px solid var(--border)}
+:root{--paper:#f4efe7;--paper-deep:#e8dfd2;--surface:#fbf8f2;--ink:#211f1b;--muted:#756d63;--rule:#d5cabc;--accent:#b85f48;--accent-dark:#813c2e;--teal:#2f6f68;--blue:#486a86;--c-critical:#9e3d32;--c-high:#c65a38;--c-medium:#aa7a2e;--c-low:#486a86;--c-info:#756d63}
+@media(prefers-color-scheme:dark){:root{--paper:#1e1b18;--paper-deep:#2a2520;--surface:#27221e;--ink:#f1eadf;--muted:#b7aa9b;--rule:#50463b;--accent:#d27a5f;--accent-dark:#ef9a79;--teal:#76b6aa;--blue:#8eaec6}}
+*{box-sizing:border-box;margin:0}
+html{scroll-behavior:smooth}
+body{background:var(--paper);color:var(--ink);font-family:"Inter","Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif;font-size:16px;line-height:1.7;font-synthesis:none;padding:0 1.25rem 3rem}
+body,p,li{ text-wrap:pretty }
+h1,h2,h3,h4{font-family:"Newsreader","Noto Serif SC","Songti SC","STSong",serif;text-wrap:balance}
+.report-shell{max-width:1180px;margin:0 auto}
+.masthead{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2rem;align-items:end;padding:clamp(2.5rem,7vw,6rem) 0 2rem;border-bottom:2px solid var(--ink)}
+.eyebrow,.section-kicker{font-family:"Geist Mono","JetBrains Mono","SFMono-Regular",monospace;font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);font-weight:700}
+.masthead h1{max-width:11ch;font-size:clamp(2.8rem,7vw,6.5rem);font-weight:600;line-height:1.02;letter-spacing:0}
+.masthead .dek{max-width:38em;margin-top:1.25rem;color:var(--muted);font-size:1rem}
+.masthead-meta{display:flex;flex-direction:column;align-items:flex-end;gap:.85rem;text-align:right;color:var(--muted);font-size:.78rem;max-width:24rem}
+.masthead-meta code{font-family:"Geist Mono","JetBrains Mono","SFMono-Regular",monospace;font-size:.68rem;overflow-wrap:anywhere}
+.lang-btn{appearance:none;border:0;border-bottom:1px solid var(--accent);background:transparent;color:var(--ink);cursor:pointer;font:600 .75rem/1.2 "Geist Mono","JetBrains Mono",monospace;padding:.2rem 0 .25rem;text-transform:uppercase;letter-spacing:.1em}
+.lang-btn:hover{color:var(--accent)}
+.section-index{display:flex;flex-wrap:wrap;gap:1rem 1.5rem;padding:.8rem 0;border-bottom:1px solid var(--rule);font-family:"Geist Mono","JetBrains Mono","SFMono-Regular",monospace;font-size:.7rem;text-transform:uppercase;letter-spacing:.08em}
+.section-index a{color:var(--muted);text-decoration:none}.section-index a:hover{color:var(--accent);text-decoration:underline;text-underline-offset:.25em}
+.priority-panel{display:grid;grid-template-columns:repeat(2,minmax(6rem,8rem)) minmax(0,1fr);gap:1.25rem;align-items:center;margin:2rem 0 1rem;padding:1rem 0;border-top:2px solid var(--accent);border-bottom:1px solid var(--rule)}
+.priority-count{display:flex;flex-direction:column;border-right:1px solid var(--rule);padding-right:1.25rem}.priority-number{font:600 clamp(2.3rem,4vw,3.8rem)/.95 "Newsreader","Noto Serif SC","Songti SC",serif;color:var(--accent-dark)}.priority-caption{font:700 .68rem/1.3 "Geist Mono","JetBrains Mono",monospace;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}.priority-copy h3{margin:.25rem 0 .2rem;font-size:clamp(1.15rem,2vw,1.65rem)}.priority-copy p:last-child{max-width:68ch;color:var(--muted);font-size:.84rem}.priority-clear{display:block}.priority-clear p:last-child{margin-top:.35rem;color:var(--muted);font-size:.86rem}
+h2{font-size:clamp(1.7rem,2.4vw,2.45rem);font-weight:600;line-height:1.2;margin:3.25rem 0 1rem;padding-bottom:.7rem;border-bottom:1px solid var(--ink)}
+h3{font-size:1.35rem;font-weight:600;margin:2rem 0 .8rem}
+.dashboard{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);margin-bottom:1.1rem}
+.stat-card{min-width:0;background:transparent;border:0;border-right:1px solid var(--rule);border-radius:0;box-shadow:none;padding:1.1rem 1rem 1.2rem}
+.stat-card:nth-child(4n){border-right:0}.stat-value{font-family:"Newsreader","Noto Serif SC","Songti SC",serif;font-size:clamp(2rem,3.6vw,3.35rem);font-weight:600;line-height:1;color:var(--accent-dark)}
+.stat-label{display:flex;align-items:center;gap:.35rem;margin-top:.55rem;font-size:.78rem;font-weight:700}.stat-desc{margin-top:.35rem;color:var(--muted);font-size:.74rem;line-height:1.45}
+.secondary-metrics{border-bottom:1px solid var(--rule);margin-bottom:1rem}.secondary-metrics>summary{padding:.65rem 0}.secondary-metrics>summary::before{display:none}.secondary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-top:1px solid var(--rule)}.secondary-grid .stat-card{border-top:0;padding:.9rem .8rem 1rem}.secondary-grid .stat-value{font-size:2rem}.secondary-grid .stat-card:nth-child(4n){border-right:0}
+.card-detail{margin-top:.75rem;padding-top:.65rem;border-top:1px solid var(--rule);font-size:.74rem;color:var(--muted)}.card-detail code{font-size:.68rem;white-space:pre-wrap}
+.card-details{margin-top:.6rem}.card-details summary{font-size:.7rem;color:var(--muted);padding:.2rem 0}.card-details summary::before{display:none}
+.card-detail-list{max-height:200px;overflow-y:auto;padding:.25rem 0}.card-item{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;padding:.25rem 0;font-size:.76rem}.card-item-skills{color:var(--muted);font-size:.7rem}
+.finding-skill{padding:.7rem 0;border-bottom:1px solid var(--rule)}.finding-skill:last-of-type{border-bottom:0}.finding-skill>strong{display:block;font-size:.98rem}.finding-skill ul{margin:.4rem 0 0 1.5rem}.skill-context{display:flex;align-items:baseline;gap:.35rem .55rem;flex-wrap:wrap;margin:.3rem 0;color:var(--muted);font:400 .72rem/1.55 "Geist Mono","JetBrains Mono","SFMono-Regular",monospace}.skill-meta-label{color:var(--accent);font-weight:700;text-transform:uppercase;letter-spacing:.05em}.skill-meta-path{display:inline-flex;gap:.3rem;min-width:0}.skill-meta-path code{min-width:0;overflow-wrap:anywhere;color:var(--ink)}.skill-meta-sep{color:var(--rule)}
+.severity-bar{display:flex;height:12px;overflow:hidden;background:var(--paper-deep);margin:.9rem 0 .65rem}.bar-seg{height:100%}.bar-critical{background:var(--c-critical)}.bar-high{background:var(--c-high)}.bar-medium{background:var(--c-medium)}.bar-low{background:var(--c-low)}.bar-info{background:var(--c-info)}
+.legend,.scan-class-legend{display:flex;flex-wrap:wrap;gap:.75rem 1.1rem;margin-bottom:1rem;color:var(--muted);font-size:.76rem}.legend-item{display:flex;align-items:center;gap:.35rem}.dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+summary{list-style:none;padding:.85rem 0;cursor:pointer;display:flex;align-items:center;gap:.55rem;flex-wrap:wrap}summary::-webkit-details-marker{display:none}summary::before{content:"+";flex:0 0 1rem;color:var(--accent);font:1rem/1 "Geist Mono","JetBrains Mono",monospace}details[open]>summary::before{content:"−"}summary:hover{color:var(--accent)}
+.finding-card,.guide-card,.info-card,.root-card{background:transparent;border:0;border-top:1px solid var(--rule);border-radius:0;margin:0;overflow:visible}.finding-card:last-child,.guide-card:last-child,.root-card:last-child{border-bottom:1px solid var(--rule)}
+.badge{display:inline-flex;align-items:center;font:700 .64rem/1 "Geist Mono","JetBrains Mono",monospace;letter-spacing:.08em;padding:.3rem .45rem;color:#fff;text-transform:uppercase}.badge-critical{background:var(--c-critical)}.badge-high{background:var(--c-high)}.badge-medium{background:var(--c-medium)}.badge-low{background:var(--c-low)}.badge-info{background:var(--c-info)}
+.finding-title{font-weight:700;flex:1}.tag{font:600 .66rem/1.2 "Geist Mono","JetBrains Mono",monospace;letter-spacing:.04em;padding:.25rem .4rem;background:var(--paper-deep);color:var(--muted)}.tag-ignored{background:#e9d7ae;color:#744f16}
+.finding-body{padding:0 0 1rem 1.55rem;font-size:.92rem}.finding-body p{max-width:72ch;margin:.55rem 0}.finding-body ul{margin:.55rem 0 .55rem 1.2rem}.finding-id{color:var(--muted);margin-top:.8rem}
+.fix-versions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.5rem;margin-top:1.1rem}.fix-ver h4{font:700 .7rem/1.3 "Geist Mono","JetBrains Mono",monospace;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:.55rem}
+.dupe-table,.skill-table{width:100%;border-collapse:collapse;font-size:.82rem;margin-top:.6rem}.dupe-table th,.dupe-table td,.skill-table th,.skill-table td{padding:.55rem .65rem;border-bottom:1px solid var(--rule);text-align:left;vertical-align:top}.dupe-table th,.skill-table th{font:700 .68rem/1.3 "Geist Mono","JetBrains Mono",monospace;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.guide-body,.info-body{padding:0 0 1rem 1.55rem;border-top:0;font-size:.92rem}.info-body p{max-width:72ch;margin:.55rem 0;padding-left:.9rem;border-left:2px solid var(--accent)}
+.steps{background:var(--surface);border-left:3px solid var(--teal);padding:.8rem .9rem;white-space:pre-wrap;font-size:.84rem;margin:.55rem 0}
+.prompt-block{position:relative;margin-top:.55rem}.prompt{background:var(--ink);color:var(--paper);border-left:3px solid var(--accent);padding:1rem 3.8rem 1rem 1rem;border-radius:0;font:400 .78rem/1.6 "Geist Mono","JetBrains Mono","SFMono-Regular",monospace;white-space:pre-wrap;overflow-x:auto}
+.copy-btn{position:absolute;top:.65rem;right:.65rem;padding:.3rem .45rem;font:700 .65rem/1 "Geist Mono","JetBrains Mono",monospace;letter-spacing:.04em;border:1px solid rgba(255,255,255,.35);border-radius:0;background:transparent;color:var(--paper);cursor:pointer}.copy-btn:hover{border-color:var(--accent);color:#fff}
+.step-prompts{margin-top:1.25rem;border-top:1px solid var(--rule)}.step-prompts h3{margin:1rem 0 .25rem;font-size:1.1rem}.step-prompt{border-bottom:1px solid var(--rule)}.step-prompt summary{font:700 .78rem/1.4 "Geist Mono","JetBrains Mono",monospace;letter-spacing:.03em;padding:.7rem 0}.step-prompt-body{padding:0 0 .85rem 1.55rem}.step-prompt .prompt-block{margin:0}.step-prompt .prompt{margin:0}
+.tip-wrap{position:relative;display:inline-flex;align-items:center}.tip-icon{display:inline-flex;align-items:center;justify-content:center;width:1rem;height:1rem;border:1px solid var(--rule);border-radius:50%;color:var(--muted);font:700 .63rem/1 "Geist Mono",monospace;cursor:help}
+.tip-box{display:none;position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);width:320px;z-index:10;background:var(--surface);color:var(--ink);border:1px solid var(--ink);padding:.75rem;font-size:.78rem;line-height:1.5;white-space:normal}.tip-wrap:hover .tip-box{display:block}
+.root-card summary{font-size:.86rem}.root-card .root-path{font:600 .78rem/1.4 "Geist Mono","JetBrains Mono",monospace;overflow-wrap:anywhere}.root-card .tag{font-size:.62rem}.root-body{padding:0 0 .85rem 1.55rem;border-top:0}.root-empty{padding:.6rem 0;font-size:.8rem;color:var(--muted);font-style:italic}.skill-table code{font-size:.72rem;overflow-wrap:anywhere}.skill-table .skill-name{font-weight:700}
+footer{text-align:center;color:var(--muted);font:400 .72rem/1.5 "Geist Mono","JetBrains Mono",monospace;margin-top:3rem;padding-top:1rem;border-top:1px solid var(--rule)}
+@media(max-width:900px){.dashboard{grid-template-columns:repeat(2,1fr)}.stat-card:nth-child(4n){border-right:1px solid var(--rule)}.stat-card:nth-child(2n){border-right:0}.secondary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.secondary-grid .stat-card:nth-child(2n){border-right:0}.masthead{grid-template-columns:1fr}.masthead-meta{align-items:flex-start;text-align:left}.fix-versions{grid-template-columns:1fr}}
+@media(max-width:560px){body{padding:0 .9rem 2rem}.masthead{padding-top:2.5rem}.masthead h1{font-size:clamp(2.6rem,16vw,4.4rem)}.dashboard{grid-template-columns:1fr 1fr}.stat-card{padding:.85rem .7rem}.stat-value{font-size:2.2rem}.priority-panel{grid-template-columns:1fr 1fr;gap:.8rem}.priority-copy{grid-column:1/-1}.priority-count{padding-right:.8rem}.finding-body,.guide-body,.info-body,.root-body{padding-left:1.15rem}.tip-box{left:0;transform:none;width:min(300px,calc(100vw - 2rem))}}
 </style>
 </head>
 <body>
-<header>
-  <h1>${D('report.title')}</h1>
-  <button class="lang-btn" onclick="toggleLang()"><span data-lang="en">中文</span><span data-lang="zh">EN</span></button>
+<main class="report-shell">
+<header class="masthead">
+  <div>
+    <p class="eyebrow">Agent Skill Doctor · Diagnostic Report</p>
+    <h1>${D('report.title')}</h1>
+    <p class="dek"><span data-lang="en">A readable field report for deciding what to keep, review, update, or retire.</span><span data-lang="zh">一份用于判断技能该保留、复核、更新还是归档的诊断报告。</span></p>
+  </div>
+  <div class="masthead-meta">
+    <span>${D('html.generatedAt')}: ${new Date().toISOString()}</span>
+    ${reportPathForPrompt ? `<code>${escapeHtml(reportPathForPrompt)}</code>` : ''}
+    <button class="lang-btn" onclick="toggleLang()"><span data-lang="en">中文</span><span data-lang="zh">EN</span></button>
+  </div>
 </header>
 
-<h2>${D('html.dashboard')}</h2>
+<nav class="section-index" aria-label="Report sections">
+  <a href="#dashboard">01 · ${D('html.dashboard')}</a>
+  <a href="#scan-overview">02 · ${D('html.scanOverview')}</a>
+  <a href="#remediation">03 · ${D('html.remediationGuide')}</a>
+  <a href="#findings">04 · ${D('fix.perFinding')}</a>
+</nav>
+
+${priorityHtml}
+
+<h2 id="dashboard">${D('html.dashboard')}</h2>
 <div class="dashboard">${summaryCards}</div>
+<details class="secondary-metrics">
+  <summary><span class="section-kicker">05</span><span data-lang="en">All metrics</span><span data-lang="zh">全部指标</span></summary>
+  <div class="secondary-grid">${secondaryCards}</div>
+</details>
 <div class="severity-bar">${severityBar}</div>
 <div class="legend">${severityLegend}</div>
 
-<h2>${D('html.scanOverview')}</h2>
+<h2 id="scan-overview">${D('html.scanOverview')}</h2>
 ${scanOverviewHtml}
 
 <details class="info-card">
@@ -1573,13 +1698,14 @@ ${scanOverviewHtml}
   </div>
 </details>
 
-<h2>${D('html.remediationGuide')}</h2>
+<h2 id="remediation">${D('html.remediationGuide')}</h2>
 ${remediationPathHtml}
 
-<h3 style="font-size:1rem;margin:1.5rem 0 0.5rem;color:var(--muted)">${D('fix.perFinding')}</h3>
+<h2 id="findings">${D('fix.perFinding')}</h2>
 ${perFindingHtml}
 
 <footer>${D('html.generatedAt')}: ${new Date().toISOString()}</footer>
+</main>
 
 <script>
 function setLang(lang){
@@ -1650,8 +1776,8 @@ function usage() {
 
 Commands:
   scan [--full] [--rebuild-index] [--root <path>] [--json] [--lang en|zh]
-  diagnose [--json] [--ci] [--fail-on high|critical|medium] [--rules <dir>] [--include-ignored] [--check-upstream] [--zombie-threshold <0..1>] [--min-confidence <0..1>] [--lang en|zh]
-  report [--format md|json|html] [--output <path>] [--include-ignored] [--lang en|zh]
+  diagnose [--root <path>] [--json] [--ci] [--fail-on high|critical|medium] [--rules <dir>] [--include-ignored] [--check-upstream] [--governance-all] [--lang en|zh]
+  report [--root <path>] [--scan-only] [--format md|json|html] [--output <path>] [--include-ignored] [--lang en|zh]
   guide [--lang en|zh]
   fix [--type <type>] [--severity <level>] [--ai] [--provider local|orcarouter|openai-compatible] [--allow-network] [--output <path>] [--json] [--lang en|zh]
   review --ai [--type risk] [--provider local|orcarouter|openai-compatible] [--allow-network] [--finding-id <id>] [--output <path>] [--json] [--lang en|zh]
@@ -1676,6 +1802,17 @@ Fix severity: critical, high, medium, low, info
 
 function open() { const config = loadConfig(); return { config, db: openDb(config.dbPath) }; }
 
+function lastScanRoots(db) {
+  const row = db.prepare('SELECT config_json FROM doctor_runs ORDER BY started_at DESC LIMIT 1').get();
+  if (!row?.config_json) return [];
+  try {
+    const roots = JSON.parse(row.config_json).roots;
+    return Array.isArray(roots) ? roots.filter(root => typeof root === 'string' && root) : [];
+  } catch {
+    return [];
+  }
+}
+
 function severityRank(severity) {
   return { info: 0, low: 1, medium: 2, high: 3, critical: 4 }[severity] || 0;
 }
@@ -1696,7 +1833,7 @@ function exitCodeForFindings(findings, failOn, includeIgnored) {
 function runScan(args) {
   const { config, db } = open();
   const startedAt = nowIso();
-  const roots = args.root ? [expandHome(args.root)] : config.roots;
+  const roots = args.root ? [expandHome(args.root)] : (Array.isArray(args.roots) && args.roots.length ? args.roots.map(expandHome) : config.roots);
   if (args['rebuild-index']) {
     db.exec('DELETE FROM duplicate_group_members; DELETE FROM duplicate_groups; DELETE FROM finding_skills; DELETE FROM findings; DELETE FROM skill_records;');
   }
@@ -1765,7 +1902,8 @@ function runDiagnose(args) {
   }
 
   // Conflict detection
-  const conflictFindings = detectConflicts(skills, DEFAULT_CONFLICT_RULES);
+  const conflictFindings = splitByMaintenanceScope(skills.filter(skill => !isManagedInstallation(skill)))
+    .flatMap(scopeSkills => detectConflicts(scopeSkills, DEFAULT_CONFLICT_RULES));
   for (const f of conflictFindings) upsertFinding(db, f, f.links || []);
 
   // Zombie detection
@@ -1776,7 +1914,7 @@ function runDiagnose(args) {
   for (const f of zombieFindings) upsertFinding(db, f, f.links || []);
 
   // Governance readiness detection
-  const governanceFindings = runGovernanceAnalysis(db, skills);
+  const governanceFindings = runGovernanceAnalysis(db, skills, { includeAll: !!args['governance-all'] });
 
   // Freshness / update detection
   const freshnessFindings = runFreshnessAnalysis(db, skills, { checkUpstream: !!args['check-upstream'] });
@@ -1807,7 +1945,7 @@ function runDiagnose(args) {
   };
 
   if (args.json) console.log(JSON.stringify({ ...data, summary }, null, 2));
-  else {
+  else if (!args.silent) {
     const lang = args.lang || 'en';
     console.log(t('cli.skills', lang, summary.totalSkills));
     console.log(t('cli.findings', lang, summary.totalFindings));
@@ -1818,13 +1956,18 @@ function runDiagnose(args) {
     console.log(t('cli.freshnessFindings', lang, summary.freshnessFindings));
   }
 
-  if (args.ci) {
+  if (args.ci && !args.silent) {
     const rows = listFindings(db, !!args['include-ignored']);
     process.exit(exitCodeForFindings(rows, args['fail-on'] || 'high', !!args['include-ignored']));
   }
 }
 
 function runReport(args) {
+  if (!args['scan-only']) {
+    const { db } = open();
+    const roots = args.root ? [] : lastScanRoots(db);
+    runDiagnose({ ...args, roots, json: false, ci: false, silent: true });
+  }
   const { config, db } = open();
   const result = writeReport(db, { format: args.format || 'md', output: args.output ? path.resolve(expandHome(args.output)) : null, includeIgnored: !!args['include-ignored'], reportsDir: config.reportsDir, lang: args.lang || 'en' });
   console.log(t('cli.reportWritten', args.lang || 'en', result.path));
@@ -2078,13 +2221,13 @@ ORDER BY dg.confidence DESC, sr.slug ASC
 `).all();
 
   for (const member of duplicateMembers) {
-    const actionType = mode === 'aggressive' ? 'remove_from_preset' : mode === 'normal' ? 'disable' : 'tag';
+    const actionType = 'review_duplicate';
     actions.push({
       id: sha256(`${member.group_id}:${member.skill_id}:${actionType}`),
       type: actionType,
       targetSkillId: member.skill_id,
-      reason: `Duplicate candidate in ${member.strategy}; canonical skill is ${member.canonical_skill_id}.`,
-      risk: actionType === 'tag' ? 'safe' : 'needs_review',
+      reason: `Review candidate in ${member.strategy}; the suggested canonical skill is ${member.canonical_skill_id}. No change is authorized by this plan.`,
+      risk: 'safe',
       expectedState: expectedStateForSkill(member),
       dryRunCommand: `agent-skill-doctor apply plan.json --dry-run --target ${member.skill_id}`,
       executeCommand: null,
@@ -2094,13 +2237,15 @@ ORDER BY dg.confidence DESC, sr.slug ASC
   return {
     id: sha256(`plan:${at}:${actions.map(a => a.id).join('\n')}`),
     createdAt: at,
-    mode,
-    summary: `Generated ${actions.length} safe governance action(s).`,
+    mode: 'review',
+    requestedMode: mode,
+    summary: `Generated ${actions.length} review-only candidate action(s). No files, skills, or presets will be changed.`,
     actions,
     estimatedImpact: {
-      skillsToDisable: actions.filter(a => a.type === 'disable').length,
+      skillsToDisable: 0,
       skillsToRemove: 0,
-      duplicatesToMerge: actions.length,
+      duplicatesToMerge: 0,
+      duplicateCandidates: actions.length,
       riskySkills: db.prepare("SELECT COUNT(*) AS count FROM findings WHERE type = 'risk' AND ignored = 0").get().count,
     },
   };
@@ -2297,15 +2442,16 @@ async function runFix(args) {
 
     // Generate targeted prompt
     const allSkills = Object.keys(skillMap);
-    lines.push(`${lang === 'zh' ? '复制以下提示词给 Agent' : 'Copy this prompt to Agent'}:`);
+    lines.push(`${lang === 'zh' ? '复制以下复核提示词给 Agent（仅复核，不直接修改）' : 'Copy this review-only prompt to Agent (review only, no direct changes)'}:`);
     lines.push('---');
-    lines.push(`${lang === 'zh' ? '请修复以下技能的问题' : 'Please fix the following skills'}:`);
+    lines.push(`${lang === 'zh' ? '请先复核以下技能的问题，不要直接修改' : 'Please review the following skill findings before making any change'}:`);
     for (const [slug, info] of Object.entries(skillMap)) {
       lines.push(`\n技能: ${slug} (${info.path})`);
       for (const f of info.findings) {
         lines.push(`- [${f.severity}] ${f.title}: ${f.recommendation || t(`guide.${type}.steps`, lang).split('\n')[0]}`);
       }
     }
+    lines.push(`${lang === 'zh' ? '\n约束：将发现视为待核实线索；先输出证据、置信度、影响和最小可回退方案。未获得明确确认前，不得删除、移动、禁用、覆盖、重装或编辑任何 Skill、配置或文件。' : '\nConstraints: treat findings as leads to verify; first return evidence, confidence, impact, and the smallest reversible proposal. Do not delete, move, disable, overwrite, reinstall, or edit any skill, configuration, or file without explicit confirmation.'}`);
     lines.push('---');
     lines.push('');
   }

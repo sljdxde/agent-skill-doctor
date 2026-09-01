@@ -179,16 +179,6 @@ function detectDuplicateGroups(skills) {
 
   add('exact_duplicate', 1.0, groupBy(skills, contentHash), 'identical content hash');
   add('same_source_duplicate', 0.95, groupBy(skills, sourceKey), 'same source URL, subdir, and slug');
-  add(
-    'same_name_duplicate',
-    0.7,
-    groupBy(skills, skill => {
-      const sameSlug = skills.filter(other => other.slug === skill.slug);
-      const distinctHashes = new Set(sameSlug.map(contentHash).filter(Boolean));
-      return distinctHashes.size > 1 ? skill.slug : null;
-    }),
-    'same normalized skill name with different content'
-  );
 
   return groups;
 }
@@ -198,10 +188,9 @@ function versionDriftId(skills, key) {
 }
 
 function detectVersionDrift(skills) {
-  const candidates = [
-    ...groupBy(skills, sourceKey),
-    ...groupBy(skills, skill => skill.slug),
-  ];
+  // A shared name is not enough evidence: unrelated skills can intentionally use it.
+  // Only compare installations that explicitly declare the same upstream identity.
+  const candidates = groupBy(skills, sourceKey);
   const seen = new Set();
   const findings = [];
 

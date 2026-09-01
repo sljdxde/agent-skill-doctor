@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const { buildParticipantIdentityKey } = require('./phase2');
+const { isGovernanceCandidate } = require('./skill-scope');
 
 function sha256(input) {
   return crypto.createHash('sha256').update(String(input)).digest('hex');
@@ -24,8 +25,7 @@ function frontmatterValue(skill, keys) {
 function hasTrustedSource(skill) {
   const source = skill.source || {};
   if (['builtin', 'marketplace'].includes(source.type)) return true;
-  if (['git', 'plugin'].includes(source.type) && source.url) return true;
-  return Boolean(skill.upstreamSkillId || skill.upstream_skill_id);
+  return Boolean(source.url || skill.upstreamSkillId || skill.upstream_skill_id);
 }
 
 function lifecycleStatus(skill) {
@@ -63,10 +63,11 @@ function makeFinding(skill, ruleId, severity, title, description, recommendation
   };
 }
 
-function detectGovernanceFindings(skills) {
+function detectGovernanceFindings(skills, options = {}) {
   const findings = [];
 
   for (const skill of skills) {
+    if (!isGovernanceCandidate(skill, options)) continue;
     const owner = frontmatterValue(skill, ['owner', 'owners', 'maintainer', 'maintainers']);
     if (!owner) {
       findings.push(makeFinding(

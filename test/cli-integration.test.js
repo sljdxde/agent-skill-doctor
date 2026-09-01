@@ -49,7 +49,7 @@ function makeFixture() {
     '---',
     '# Danger',
     'Use this skill when testing destructive commands to generate output.',
-    'Never run rm -rf without review.',
+    'Run rm -rf "$target" after the test environment is confirmed.',
   ].join('\n'));
   return { temp, home, skills };
 }
@@ -87,6 +87,11 @@ test('default scan roots include requested agent skill directories', () => {
   writeSkill(home, path.join('.claude', 'skills', 'claude-global'), 'Claude Global');
   writeSkill(home, path.join('.cursor', 'skills', 'cursor-skill'), 'Cursor Skill');
   writeSkill(home, path.join('.opencode', 'skills', 'opencode-skill'), 'OpenCode Skill');
+  writeSkill(home, path.join('.config', 'opencode', 'skills', 'opencode-global-skill'), 'OpenCode Global Skill');
+  writeSkill(home, path.join('.qoder', 'skills', 'qoder-skill'), 'Qoder Skill');
+  writeSkill(home, path.join('.workbuddy', 'skills', 'workbuddy-skill'), 'WorkBuddy Skill');
+  writeSkill(home, path.join('.codebuddy', 'skills', 'codebuddy-skill'), 'CodeBuddy Skill');
+  writeSkill(home, path.join('.workbuddy', 'connectors', 'skills', 'connector-skill'), 'Connector Skill');
 
   const result = run(['scan', '--json'], {
     env: {
@@ -103,15 +108,67 @@ test('default scan roots include requested agent skill directories', () => {
     'agent-skill',
     'agents-skill',
     'claude-global',
+    'codebuddy-skill',
     'codex-global',
+    'connector-skill',
     'cursor-skill',
+    'opencode-global-skill',
     'opencode-skill',
+    'qoder-skill',
+    'workbuddy-skill',
   ]);
+
+  const reportPath = path.join(temp, 'default-roots-report.html');
+  const report = run(['report', '--format', 'html', '--output', reportPath], {
+    env: { AGENT_SKILL_DOCTOR_HOME: doctorHome, HOME: home, USERPROFILE: home },
+  });
+  assert.equal(report.status, 0, report.stderr);
+  const html = fs.readFileSync(reportPath, 'utf8');
+  assert.match(html, />Qoder</);
+  assert.match(html, />CodeBuddy</);
+  assert.match(html, />WorkBuddy</);
+  assert.match(html, />OpenCode</);
+});
+
+test('default scan does not use the current repository as an implicit root', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'asd-default-root-'));
+  const home = path.join(temp, 'home');
+  const doctorHome = path.join(temp, 'doctor-home');
+  const cwd = path.join(temp, 'project');
+  fs.mkdirSync(path.join(cwd, 'examples', 'repo-only-skill'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, 'examples', 'repo-only-skill', 'SKILL.md'), '# Repo Only\n\nThis must not be picked up by default scanning.\n');
+  writeSkill(home, path.join('.codex', 'skills', 'codex-default'), 'Codex Default');
+
+  const result = run(['scan', '--json'], {
+    cwd,
+    env: { AGENT_SKILL_DOCTOR_HOME: doctorHome, HOME: home, USERPROFILE: home },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const parsed = JSON.parse(result.stdout.slice(result.stdout.indexOf('{')));
+  const slugs = parsed.skills.map(skill => skill.slug);
+  assert.deepEqual(slugs, ['codex-default']);
+});
+
+test('README-only directories require --full scanning', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'asd-readme-scan-'));
+  const home = path.join(temp, 'home');
+  const doctorHome = path.join(temp, 'doctor-home');
+  const readmeOnly = path.join(home, '.codex', 'skills', 'readme-only');
+  fs.mkdirSync(readmeOnly, { recursive: true });
+  fs.writeFileSync(path.join(readmeOnly, 'README.md'), '# README-only skill candidate\n');
+
+  const defaultScan = run(['scan', '--json'], { env: { AGENT_SKILL_DOCTOR_HOME: doctorHome, HOME: home, USERPROFILE: home } });
+  assert.equal(defaultScan.status, 0, defaultScan.stderr);
+  assert.equal(JSON.parse(defaultScan.stdout.slice(defaultScan.stdout.indexOf('{'))).skills.length, 0);
+
+  const fullScan = run(['scan', '--full', '--json'], { env: { AGENT_SKILL_DOCTOR_HOME: doctorHome, HOME: home, USERPROFILE: home } });
+  assert.equal(fullScan.status, 0, fullScan.stderr);
+  assert.equal(JSON.parse(fullScan.stdout.slice(fullScan.stdout.indexOf('{'))).skills.length, 1);
 });
 
 test('diagnose includes duplicate and version drift findings in JSON output', () => {
   const fixture = makeFixture();
-  const result = run(['diagnose', '--root', fixture.skills, '--json'], {
+  const result = run(['diagnose', '--root', fixture.skills, '--governance-all', '--json'], {
     env: { AGENT_SKILL_DOCTOR_HOME: fixture.home },
   });
   assert.equal(result.status, 0, result.stderr);
@@ -126,7 +183,7 @@ test('diagnose includes duplicate and version drift findings in JSON output', ()
 
 test('governance command lists registry readiness findings', () => {
   const fixture = makeFixture();
-  const diagnosed = run(['diagnose', '--root', fixture.skills, '--json'], {
+  const diagnosed = run(['diagnose', '--root', fixture.skills, '--governance-all', '--json'], {
     env: { AGENT_SKILL_DOCTOR_HOME: fixture.home },
   });
   assert.equal(diagnosed.status, 0, diagnosed.stderr);
@@ -173,6 +230,25 @@ test('report HTML renders successfully', () => {
   assert.equal(report.status, 0, report.stderr);
   const html = fs.readFileSync(out, 'utf8');
   assert.match(html, /Agent Skill Doctor Report/);
+  assert.match(html, new RegExp(fixture.skills.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(html, /skill-context/);
+  assert.match(html, /第 2 步 Agent 提示词/);
+  assert.match(html, /step-prompt/);
+  assert.match(html, /不得删除、移动、禁用/);
+  assert.doesNotMatch(html, /请移除以下路径|请移除以下冗余技能副本|Remove these paths/);
+});
+
+test('report runs a complete diagnosis by default', () => {
+  const fixture = makeFixture();
+  const out = path.join(fixture.temp, 'report.json');
+  const report = run(['report', '--root', fixture.skills, '--format', 'json', '--output', out], {
+    env: { AGENT_SKILL_DOCTOR_HOME: fixture.home },
+  });
+  assert.equal(report.status, 0, report.stderr);
+  const data = JSON.parse(fs.readFileSync(out, 'utf8'));
+  assert.ok(data.summary.duplicateGroups >= 1, JSON.stringify(data.summary));
+  assert.ok(data.summary.versionDriftFindings >= 1, JSON.stringify(data.summary));
+  assert.ok(data.findings.some(finding => finding.type === 'duplicate'));
 });
 
 test('plan emits expectedState and apply dry-run marks stale actions', () => {
@@ -292,7 +368,10 @@ test('apply dry-run filters actions by target skill id', () => {
   const planned = run(['plan', '--json', '--output', planFile], { env });
   assert.equal(planned.status, 0, planned.stderr);
   const plan = JSON.parse(fs.readFileSync(planFile, 'utf8'));
-  assert.ok(plan.actions.length >= 2);
+  assert.ok(plan.actions.length >= 1);
+  assert.ok(plan.actions.every(action => action.type === 'review_duplicate'));
+  assert.equal(plan.estimatedImpact.skillsToDisable, 0);
+  assert.equal(plan.estimatedImpact.skillsToRemove, 0);
   const target = plan.actions[0].targetSkillId;
   const applied = run(['apply', planFile, '--dry-run', '--target', target, '--json'], { env });
   assert.equal(applied.status, 0, applied.stderr);

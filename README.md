@@ -67,8 +67,8 @@ npx agent-skill-doctor help
 ```text
 请使用 agent-skill-doctor 诊断我的本地 Agent Skills：
 
-1. 运行：npx agent-skill-doctor diagnose --lang zh
-2. 生成 HTML 报告：npx agent-skill-doctor report --format html --lang zh
+1. 生成完整 HTML 报告：npx agent-skill-doctor report --format html --lang zh
+2. `report` 会先运行完整诊断；若刚刚已经运行过 `diagnose`，可加 `--scan-only` 只导出已有结果。
 3. 阅读报告中的冲突、重复、版本漂移、僵尸和风险项。
 4. 先不要删除文件。请先输出修复计划，并说明每一步会改哪些 Skill。
 5. 对 risk / duplicate / version_drift / zombie / description_quality 分别给出建议。
@@ -92,7 +92,21 @@ npx agent-skill-doctor fix --type zombie --lang zh
 ~/.claude/skills
 ~/.cursor/skills
 ~/.opencode/skills
+~/.config/opencode/skills
+~/.qoder/skills
+~/.qoder-cn/skills
+~/.qoderwork/skills
+~/.qoderworkcn/skills
+~/.codebuddy/skills
+~/.workbuddy/skills
+~/.workbuddy/connectors/skills
+~/.deepseek/skills
+~/.deepseek-harness/skills
 ```
+
+DeepSeek Harness 等 agent 如果复用 `~/.agents/skills`，会通过该目录自动发现。默认扫描不会把当前工作目录当作扫描根；只有显式传入 `--root` 时才会扫描指定目录。默认只将包含 `SKILL.md` 的目录识别为 Skill；加 `--full` 才会把仅有 `README.md` 的目录也纳入候选。
+
+`governance` 默认只检查项目级、中心库或显式标记为可共享/可发布的 Skill，避免把第三方安装包误报为待治理对象；需要全量检查时使用 `--governance-all`。`zombie` 只有在存在明确使用遥测时才会给出“疑似未使用”结论，不能把“没有遥测”当成“没有使用”。
 
 如需扫描特定目录：
 
