@@ -20,9 +20,7 @@
       "severity": "high",
       "category": "network",
       "patterns": [
-        { "id": "curl-command", "text": "curl" },
-        { "id": "wget-command", "text": "wget" },
-        { "id": "remote-script", "text": "remote script" },
+        { "id": "pipe-to-shell", "regex": "\\b(?:curl|wget)\\b[^\\n|]{0,240}\\|\\s*(?:sh|bash|zsh|powershell)\\b" },
         { "id": "download-execute", "text": "download and execute" }
       ],
       "recommendation": "Verify source URLs and avoid automatic execution of remotely downloaded content."

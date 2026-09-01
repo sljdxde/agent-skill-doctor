@@ -47,10 +47,18 @@ test('skill with system tag returns zombie score 0', () => {
 });
 
 test('completely unused skill gets high zombie score', () => {
-  const s = skill({ id: 'a', description: '' });
+  const s = skill({ id: 'a', description: '', usage: { installedInAgents: [], installedInProjects: [], presetCount: 0, hasRecentModification: false, lastActivityLogAt: null, manuallyPinned: false, activityEvidenceAvailable: true } });
   const score = computeZombieScore(s);
   assert.ok(score >= 0.8, `Expected score >= 0.8, got ${score}`);
   assert.equal(zombieLevel(score), 'strong_suspicious_zombie');
+});
+
+test('installed skill without activity telemetry is not labeled a zombie', () => {
+  const s = skill({
+    id: 'no-telemetry',
+    usage: { installedInAgents: ['claude'], installedInProjects: [], presetCount: 0, hasRecentModification: false, lastActivityLogAt: null, manuallyPinned: false },
+  });
+  assert.equal(computeZombieScore(s), 0.0);
 });
 
 test('skill in preset and agent gets low zombie score', () => {
@@ -83,11 +91,11 @@ test('zombie level thresholds are correct', () => {
 });
 
 test('detectZombies returns findings for unused skills', () => {
-  const unused = skill({ id: 'unused', description: '' });
+  const unused = skill({ id: 'unused', description: '', usage: { installedInAgents: [], installedInProjects: [], presetCount: 0, hasRecentModification: false, lastActivityLogAt: null, manuallyPinned: false, activityEvidenceAvailable: true } });
   const used = skill({
     id: 'used',
     description: 'A useful skill for code review when reviewing PRs and generating results',
-    usage: { presetCount: 2, installedInAgents: ['claude'], installedInProjects: ['p1'], hasRecentModification: true, lastActivityLogAt: '2026-06-01', manuallyPinned: false },
+    usage: { presetCount: 2, installedInAgents: ['claude'], installedInProjects: ['p1'], hasRecentModification: true, lastActivityLogAt: '2026-06-01', manuallyPinned: false, activityEvidenceAvailable: true },
   });
   const findings = detectZombies([unused, used]);
   assert.ok(findings.length >= 1);
@@ -107,11 +115,11 @@ test('descriptionQuality returns higher score for rich description', () => {
 });
 
 test('detectZombies findings are sorted by score descending', () => {
-  const a = skill({ id: 'a', description: '' });
+  const a = skill({ id: 'a', description: '', usage: { installedInAgents: [], installedInProjects: [], presetCount: 0, hasRecentModification: false, lastActivityLogAt: null, manuallyPinned: false, activityEvidenceAvailable: true } });
   const b = skill({
     id: 'b',
     description: 'Some description',
-    usage: { presetCount: 0, installedInAgents: [], installedInProjects: [], hasRecentModification: false, manuallyPinned: false },
+    usage: { presetCount: 0, installedInAgents: [], installedInProjects: [], hasRecentModification: false, manuallyPinned: false, activityEvidenceAvailable: true },
   });
   const findings = detectZombies([a, b]);
   if (findings.length >= 2) {

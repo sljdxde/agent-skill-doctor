@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { buildParticipantIdentityKey, normalizeSourceUrl } = require('./phase2');
+const { isManagedInstallation } = require('./skill-scope');
 
 function sha256(input) {
   return crypto.createHash('sha256').update(String(input)).digest('hex');
@@ -72,6 +73,11 @@ function sourceRef(skill) {
  */
 function sourceCommit(skill) {
   return skill.sourceCommit || skill.source_commit || skill.source?.commit || null;
+}
+
+function tracksUpdates(skill) {
+  const frontmatter = skill.frontmatter || {};
+  return ['1', 'true', 'yes', 'on'].includes(String(frontmatter.track_updates || frontmatter.trackUpdates || '').trim().toLowerCase());
 }
 
 /**
@@ -230,11 +236,12 @@ function detectFreshnessFindings(skills, options = {}) {
     const commit = sourceCommit(skill);
     const version = skill.version || null;
 
-    // Skip built-in / official skills — they are managed by the agent itself
-    if (type === 'builtin') continue;
+    // Agent/plugin managed installations have their own updater and should not be treated as user-maintained copies.
+    if (isManagedInstallation(skill) || type === 'builtin') continue;
 
     // --- Signal 1: no-update-channel ---
     if (!url || type === 'unknown') {
+      if (!tracksUpdates(skill)) continue;
       findings.push(makeFinding(
         skill,
         'no-update-channel',

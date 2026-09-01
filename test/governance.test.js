@@ -20,8 +20,8 @@ function skill(overrides = {}) {
   };
 }
 
-test('detectGovernanceFindings reports missing registry readiness metadata', () => {
-  const findings = detectGovernanceFindings([skill()]);
+test('detectGovernanceFindings reports missing registry readiness metadata for an opted-in skill', () => {
+  const findings = detectGovernanceFindings([skill({ frontmatter: { registry: 'true' } })]);
   const rules = findings.map(f => f.ruleId).sort();
 
   assert.deepEqual(rules, [
@@ -35,6 +35,26 @@ test('detectGovernanceFindings reports missing registry readiness metadata', () 
   assert.ok(findings.every(f => f.links[0].role === 'primary'));
 });
 
+test('detectGovernanceFindings skips ordinary installed skills by default', () => {
+  assert.deepEqual(detectGovernanceFindings([skill()]), []);
+});
+
+test('detectGovernanceFindings does not treat version metadata alone as registry intent', () => {
+  assert.deepEqual(detectGovernanceFindings([skill({ version: '1.2.3' })]), []);
+});
+
+test('detectGovernanceFindings accepts a source URL regardless of its source type', () => {
+  const findings = detectGovernanceFindings([
+    skill({
+      source: { type: 'github', url: 'https://github.com/example/skill' },
+      frontmatter: { registry: 'true', owner: 'docs-platform', lifecycle: 'online' },
+      version: '1.2.3',
+      tags: ['stable'],
+    }),
+  ]);
+  assert.ok(!findings.some(finding => finding.ruleId === 'missing-source'));
+});
+
 test('detectGovernanceFindings accepts skills with owner, version, lifecycle label, and source', () => {
   const findings = detectGovernanceFindings([
     skill({
@@ -42,6 +62,7 @@ test('detectGovernanceFindings accepts skills with owner, version, lifecycle lab
       version: '1.2.0',
       tags: ['stable'],
       frontmatter: {
+        registry: 'true',
         owner: 'docs-platform',
         lifecycle: 'online',
       },

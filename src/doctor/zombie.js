@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const { buildSkillIdentityKey, buildParticipantIdentityKey } = require('./phase2');
+const { hasUsageEvidence, isManagedInstallation } = require('./skill-scope');
 
 function sha256(input) {
   return crypto.createHash('sha256').update(String(input)).digest('hex');
@@ -69,6 +70,9 @@ function computeZombieScore(skill) {
   if (usage.manuallyPinned || tags.includes('keep') || tags.includes('core') || tags.includes('system')) {
     return 0.0;
   }
+
+  // An installed location is not activity telemetry. Without observed usage data, absence of activity cannot prove a skill is stale.
+  if (isManagedInstallation(skill) || (usage.installedInProjects || []).length > 0 || !hasUsageEvidence(skill)) return 0.0;
 
   // Official sources are fully protected
   const protection = sourceProtectionLevel(skill);

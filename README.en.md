@@ -65,8 +65,8 @@ Paste this into Claude Code, Codex, Cursor Agent, or another local agent:
 ```text
 Use agent-skill-doctor to diagnose my local Agent Skills:
 
-1. Run: npx agent-skill-doctor diagnose --lang en
-2. Generate an HTML report: npx agent-skill-doctor report --format html --lang en
+1. Generate a full HTML report: npx agent-skill-doctor report --format html --lang en
+2. `report` runs the complete diagnosis first; use `--scan-only` to export the existing result after a recent `diagnose` run.
 3. Review conflicts, duplicates, version drift, zombie skills, and risks.
 4. Do not delete files yet. First produce a repair plan and explain which skills would change.
 5. Give recommendations for risk, duplicate, version_drift, governance, zombie, and description_quality findings.
@@ -90,7 +90,21 @@ Default scan roots:
 ~/.claude/skills
 ~/.cursor/skills
 ~/.opencode/skills
+~/.config/opencode/skills
+~/.qoder/skills
+~/.qoder-cn/skills
+~/.qoderwork/skills
+~/.qoderworkcn/skills
+~/.codebuddy/skills
+~/.workbuddy/skills
+~/.workbuddy/connectors/skills
+~/.deepseek/skills
+~/.deepseek-harness/skills
 ```
+
+Agents such as DeepSeek Harness that reuse `~/.agents/skills` are discovered through that shared root. The default scan never treats the current working directory as a scan root; use `--root` explicitly when you want to scan a project or another specific directory. By default, only directories containing `SKILL.md` are recognized as skills; use `--full` to include README-only candidates.
+
+By default, `governance` checks only project-local, central-library, or explicitly shareable/publishable skills, so third-party installations are not presented as items you need to govern. Use `--governance-all` for a full inventory. `zombie` requires explicit usage telemetry; missing telemetry alone is never treated as missing usage.
 
 Scan a specific directory:
 

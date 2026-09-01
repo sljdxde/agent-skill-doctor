@@ -43,20 +43,27 @@ test('detects same source duplicates', () => {
   assert.equal(groups.some(g => g.strategy === 'same_source_duplicate'), true);
 });
 
-test('detects version drift by same slug and different hashes', () => {
+test('does not detect version drift from a shared slug without a shared source', () => {
   const a = skill({ id: 'a', slug: 'alpha', hash: 'h1' });
   const b = skill({ id: 'b', slug: 'alpha', hash: 'h2' });
+  const findings = detectVersionDrift([a, b]);
+  assert.equal(findings.length, 0);
+});
+
+test('detects version drift for the same declared upstream source', () => {
+  const source = { type: 'git', url: 'https://github.com/example/skill.git', subdir: 'x' };
+  const a = skill({ id: 'a', slug: 'alpha', hash: 'h1', source, sourceRef: 'one' });
+  const b = skill({ id: 'b', slug: 'alpha', hash: 'h2', source, sourceRef: 'two' });
   const findings = detectVersionDrift([a, b]);
   assert.equal(findings.length, 1);
   assert.equal(findings[0].type, 'version_drift');
 });
 
-test('does not create same-name duplicate when content hash is identical', () => {
-  const a = skill({ id: 'a', slug: 'alpha', hash: 'same' });
-  const b = skill({ id: 'b', slug: 'alpha', hash: 'same' });
+test('does not create a name-only duplicate group', () => {
+  const a = skill({ id: 'a', slug: 'alpha', hash: 'h1' });
+  const b = skill({ id: 'b', slug: 'alpha', hash: 'h2' });
   const groups = detectDuplicateGroups([a, b]);
-  assert.equal(groups.filter(g => g.strategy === 'same_name_duplicate').length, 0);
-  assert.equal(groups.filter(g => g.strategy === 'exact_duplicate').length, 1);
+  assert.equal(groups.length, 0);
 });
 
 test('sourceTrustScore scores official agent repositories higher than personal GitHub repos', () => {

@@ -63,8 +63,8 @@ test('isGitUrl detects GitHub URLs', () => {
 
 // --- Offline signal tests ---
 
-test('no-update-channel: skill without source URL triggers medium finding', () => {
-  const findings = detectFreshnessFindings([skill()]);
+test('no-update-channel: opted-in skill without source URL triggers medium finding', () => {
+  const findings = detectFreshnessFindings([skill({ frontmatter: { track_updates: 'true' } })]);
   const ruleIds = findings.map(f => f.ruleId);
   assert.ok(ruleIds.includes('no-update-channel'));
   const finding = findings.find(f => f.ruleId === 'no-update-channel');
@@ -76,9 +76,20 @@ test('no-update-channel: skill without source URL triggers medium finding', () =
 
 test('no-update-channel: unknown source type triggers finding', () => {
   const findings = detectFreshnessFindings([
-    skill({ source: { type: 'unknown', url: null } }),
+    skill({ source: { type: 'unknown', url: null }, frontmatter: { track_updates: 'true' } }),
   ]);
   assert.ok(findings.some(f => f.ruleId === 'no-update-channel'));
+});
+
+test('managed plugin skill without source URL is skipped', () => {
+  const findings = detectFreshnessFindings([
+    skill({
+      source: { type: 'unknown', url: null },
+      location: { path: '/tmp/plugins/marketplaces/example/skills/demo', rootType: 'agent_global' },
+      frontmatter: { track_updates: 'true' },
+    }),
+  ]);
+  assert.equal(findings.length, 0);
 });
 
 test('skill with git source URL does NOT trigger no-update-channel', () => {
@@ -189,7 +200,7 @@ test('builtin skills are skipped entirely', () => {
 
 test('findings are sorted by severity (medium before low)', () => {
   const findings = detectFreshnessFindings([
-    skill({ id: 'no-source', slug: 'no-source' }),  // no-update-channel (medium)
+    skill({ id: 'no-source', slug: 'no-source', frontmatter: { track_updates: 'true' } }),  // no-update-channel (medium)
     skill({
       id: 'unpinned', slug: 'unpinned',
       source: { type: 'git', url: 'https://github.com/foo/bar' },
