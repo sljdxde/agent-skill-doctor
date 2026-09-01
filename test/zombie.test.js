@@ -165,7 +165,7 @@ test('zombie findings expose confidence and usage evidence classification', () =
 });
 
 test('low-confidence zombie candidates can be filtered without changing score', () => {
-  const candidate = skill({ id: 'candidate', description: '' });
+  const candidate = skill({ id: 'candidate', description: '', usage: { installedInAgents: [], installedInProjects: [], presetCount: 0, hasRecentModification: false, lastActivityLogAt: null, manuallyPinned: false, activityEvidenceAvailable: true } });
   assert.equal(zombieClassification(candidate, computeZombieScore(candidate)), 'untracked');
   assert.equal(usageEvidenceQuality(candidate).level, 'low');
   assert.equal(detectZombies([candidate], { minConfidence: 0.5 }).length, 0);
@@ -184,6 +184,7 @@ test('installed but inactive skills are unused candidates rather than untracked'
       lastActivityLogAt: null,
       manuallyPinned: false,
       confidence: 0.6,
+      activityEvidenceAvailable: true,
     },
   });
   assert.equal(zombieClassification(candidate, computeZombieScore(candidate)), 'unused_candidate');

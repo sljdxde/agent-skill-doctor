@@ -81,7 +81,6 @@ function usageEvidenceQuality(skill) {
 
 function zombieClassification(skill, score) {
   if (isProtectedSkill(skill)) return 'protected';
-  if (score < 0.4) return 'normal';
   const usage = skill.usage || {};
   const hasActivityEvidence = Boolean(
     (usage.presetCount || 0) > 0
@@ -128,7 +127,7 @@ function computeZombieScore(skill) {
   }
 
   // An installed location is not activity telemetry. Without observed usage data, absence of activity cannot prove a skill is stale.
-  if (isManagedInstallation(skill) || (usage.installedInProjects || []).length > 0 || !hasUsageEvidence(skill)) return 0.0;
+  if (isManagedInstallation(skill) || !hasUsageEvidence(skill)) return 0.0;
 
   // Official sources are fully protected
   const protection = sourceProtectionLevel(skill);

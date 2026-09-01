@@ -427,7 +427,7 @@ test('review --ai defaults to conservative local risk review', () => {
 test('fix --ai emits a local draft without modifying skill files', () => {
   const fixture = makeFixture();
   const env = { AGENT_SKILL_DOCTOR_HOME: fixture.home };
-  const diagnosed = run(['diagnose', '--root', fixture.skills, '--json'], { env });
+  const diagnosed = run(['diagnose', '--root', fixture.skills, '--governance-all', '--json'], { env });
   assert.equal(diagnosed.status, 0, diagnosed.stderr);
   const target = path.join(fixture.skills, 'danger', 'SKILL.md');
   const before = fs.readFileSync(target, 'utf8');
